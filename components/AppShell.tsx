@@ -33,8 +33,8 @@ import {
   showBrowserNotification,
 } from "@/lib/browser-notifications";
 import { setupPushSubscription } from "@/lib/push-client";
-import { getInitialNavigation, withTabOpenSession } from "@/lib/initial-navigation";
-import { getTabOpenSession, setTabOpenSession } from "@/lib/tab-session";
+import { getInitialNavigation, withTabOpen } from "@/lib/initial-navigation";
+import { clearTabOpenSession, getTabOpen, setTabOpenNewSession, setTabOpenSession } from "@/lib/tab-session";
 import { rekeyDraft } from "@/lib/draft-store";
 import {
   clearLastOpen,
@@ -505,10 +505,10 @@ export function AppShell() {
   // in the useState initializer made the first client tree differ from the
   // server HTML (sidebar "select project" vs ""). Restore after mount instead.
   useLayoutEffect(() => {
-    const next = withTabOpenSession(initialNavigation, getTabOpenSession());
+    const next = withTabOpen(initialNavigation, getTabOpen());
     if (next === initialNavigation) return;
     setInitialNavigation(next);
-    setInitialSessionRestored(false);
+    if (next.sessionId) setInitialSessionRestored(false);
   }, [initialNavigation]);
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
   const suppressCwdBumpRef = useRef(false);
@@ -525,14 +525,19 @@ export function AppShell() {
   // carry projectKey, so use the active project identity until hydration.
   // The workspace memory is shared by every tab; the tab memory keeps this
   // tab's own session so a reload does not follow another tab's last pick.
+  // New session is a selection too: remember the composer cwd so reload stays
+  // on that UI instead of resurrecting the previous chat.
   useEffect(() => {
-    if (!selectedSession) return;
-    const projectKey = selectedSession.projectKey
-      ?? activeProjectKeyRef.current
-      ?? workspaceKeyOf(selectedSession);
-    setLastOpenSession(projectKey, selectedSession.id);
-    setTabOpenSession(selectedSession.id);
-  }, [selectedSession]);
+    if (selectedSession) {
+      const projectKey = selectedSession.projectKey
+        ?? activeProjectKeyRef.current
+        ?? workspaceKeyOf(selectedSession);
+      setLastOpenSession(projectKey, selectedSession.id);
+      setTabOpenSession(selectedSession.id);
+      return;
+    }
+    if (newSessionCwd) setTabOpenNewSession(newSessionCwd);
+  }, [newSessionCwd, selectedSession]);
 
   useEffect(() => {
     const requestedCwd = initialNavigation.requestedCwd;
@@ -562,6 +567,9 @@ export function AppShell() {
         activeNewSessionDraftKeyRef.current = `new:${draftId}:${data.cwd}`;
         setNewSessionCwd(data.cwd);
         setInitialCwdStatus("ready");
+        if (!new URLSearchParams(window.location.search).get("cwd")) {
+          router.replace(`?cwd=${encodeURIComponent(data.cwd)}`, { scroll: false });
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -570,7 +578,7 @@ export function AppShell() {
       });
 
     return () => controller.abort();
-  }, [initialNavigation]);
+  }, [initialNavigation, router]);
 
   // Restore the workspace's last open session after switching to it. Called
   // from handleCwdChange once the outgoing context has been reset. The session
@@ -741,9 +749,11 @@ export function AppShell() {
       // onCwdChange effect firing after setSelectedCwd in the sidebar
       suppressCwdBumpRef.current = true;
     }
-    // Skip router.replace when restoring from URL — the param is already correct
-    // and calling replace in production Next.js triggers a Suspense remount loop
-    if (!isRestore) {
+    // Skip router.replace when the URL already has this session — calling
+    // replace in production Next.js triggers a Suspense remount loop.
+    // Tab-memory restore lands on `/` and must write `?session=` so reload
+    // and copy-link keep this session.
+    if (!isRestore || new URLSearchParams(window.location.search).get("session") !== session.id) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
   }, [activeCwd, activeFileTabId, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession]);
@@ -764,7 +774,7 @@ export function AppShell() {
     setSystemInfoLoading(false);
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
-    router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
+    router.replace(`?cwd=${encodeURIComponent(cwd)}`, { scroll: false });
   }, [invalidateWorkspaceRestore, router, isMobile]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
@@ -963,6 +973,7 @@ export function AppShell() {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
     if (selectedSession?.id === sessionId) {
+      clearTabOpenSession(sessionId);
       const cwd = selectedSession.cwd;
       const draftId = typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
@@ -978,7 +989,7 @@ export function AppShell() {
       setSystemTools(null);
       setSystemInfoLoading(false);
       setActiveTopPanel(null);
-      router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
+      router.replace(cwd ? `?cwd=${encodeURIComponent(cwd)}` : (typeof window !== "undefined" ? window.location.pathname : "/"), { scroll: false });
     }
   }, [invalidateWorkspaceRestore, selectedSession, router]);
 
