@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteMode } from "@/hooks/useLiteMode";
+import { liteModeRequestHeaders } from "@/lib/lite-request";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import {
@@ -1592,7 +1594,7 @@ function ApiKeyDetail({ provider, onRefresh, enabledModels }: {
     try {
       const res = await fetch(`/api/auth/api-key/${encodeURIComponent(provider.id)}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...liteModeRequestHeaders() },
         body: JSON.stringify({ apiKey: apiKey.trim() }),
       });
       const d = await res.json() as { success?: boolean; error?: string };
@@ -1850,6 +1852,9 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
   // `enabledModels` lives in pi's settings, not models.json, so these switches
   // apply immediately instead of waiting for this panel's Save button.
   const enabledModels = useEnabledModels(cwd);
+  // Lite mode answers the provider and model reads from a catalog without
+  // extension-registered providers, so the panel has to say so.
+  const [liteMode] = useLiteMode();
   const [config, setConfig] = useState<ModelsJson>({ providers: {} });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1873,7 +1878,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
   const savedModelIdsRef = useRef<Map<string, (string | null)[]>>(new Map());
 
   const refreshAuthProviders = useCallback(() => {
-    fetch("/api/auth/providers")
+    fetch("/api/auth/providers", { headers: liteModeRequestHeaders() })
       .then((r) => r.json())
       .then((d: { oauthProviders?: OAuthProvider[]; apiKeyProviders?: ApiKeyProvider[] }) => {
         if (Array.isArray(d.oauthProviders)) setOauthProviders(d.oauthProviders);
@@ -1903,8 +1908,13 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
       })
       .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-    refreshAuthProviders();
   }, [refreshAuthProviders]);
+
+  // The provider list is answered from a different catalog in Lite mode, so
+  // re-read it when this tab switches. (models.json is mode-independent.)
+  useEffect(() => {
+    refreshAuthProviders();
+  }, [refreshAuthProviders, liteMode]);
 
   useEffect(() => {
     if (selection) setLastSettingsSelection("models", JSON.stringify(selection));
@@ -2113,6 +2123,10 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
     <ConfigPanelShell embedded={embedded} title={t("common.models")} subtitle="~/.pi/agent/models.json" closeLabel={t("i18n.close")} onClose={onClose}>
 
         <EnabledModelsBanner controller={enabledModels} />
+
+        {liteMode && (
+          <div className="lite-mode-notice">{t("models.liteCatalogNotice")}</div>
+        )}
 
         {/* Body */}
         <ConfigSplitView>

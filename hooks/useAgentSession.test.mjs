@@ -659,6 +659,28 @@ test("keeps a detached viewport in place when streaming completes", () => {
   assert.match(source, /addEventListener\("scroll", handleScrollPositionChange/);
 });
 
+test("Lite mode holds a per-tab presence and closes its own stream when dormant", () => {
+  const liteSource = source.slice(
+    source.indexOf("const handleLiteHoldChange"),
+    source.indexOf("// Turning Lite off must restore normal-mode warmth"),
+  );
+  assert.match(source, /const \[liteModeEnabled\] = useLiteMode\(\)/);
+  assert.match(source, /useLiteSessionLifecycle\(\{/);
+  assert.match(source, /sessionId: session\?\.id \?\? null/);
+  assert.match(liteSource, /if \(hold\) \{[\s\S]*?closeEvents\(\);[\s\S]*?maintainEventsConnected\(sid\);/);
+  assert.match(liteSource, /else if \(liteModeEnabledRef\.current\) \{\s*closeEvents\(\);/);
+  // A dormant Lite page must not keep renewing (and so keep alive) leases.
+  assert.match(
+    source,
+    /if \(liteModeEnabledRef\.current && !liteHoldRef\.current\) return;/,
+  );
+  // Normal mode is never gated: the lease effect and shouldMaintain only
+  // change behaviour when Lite is on.
+  assert.match(source, /&& \(!liteModeEnabledRef\.current \|\| liteHoldRef\.current\)/);
+  // The SSE connection carries the tab id so its lease can be released alone.
+  assert.match(source, /\/events\?client=\$\{encodeURIComponent\(getClientId\(\)\)\}/);
+});
+
 test("auto-compact slash command toggles session auto-compaction", () => {
   const commandSource = source.slice(
     source.indexOf('case "auto-compact"'),

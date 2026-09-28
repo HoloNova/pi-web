@@ -1,13 +1,21 @@
 import { stat } from "fs/promises";
 import { resolve } from "path";
-import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSessionServices,
+  getAgentDir,
+  SettingsManager,
+  type ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   loadModelsWithCache,
+  modelsCacheKey,
   withModelRuntimeError,
   withSafeModelLoadFailure,
   type ModelsData,
 } from "@/lib/models-cache";
+import { createLiteModelRuntime } from "@/lib/model-runtime";
+import { isLiteRequest } from "@/lib/lite-request";
 import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
@@ -25,7 +33,7 @@ function compareModelEntries(
     || modelNameCollator.compare(a.id, b.id);
 }
 
-async function loadModels(cwd: string): Promise<ModelsData> {
+async function loadModels(cwd: string, lite: boolean): Promise<ModelsData> {
   const nameMap = new Map<string, string>();
   let modelList: { id: string; name: string; provider: string }[] = [];
   let defaultModel: { provider: string; modelId: string } | null = null;
@@ -33,21 +41,31 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   const thinkingLevelMaps: Record<string, Record<string, string | null>> = {};
 
   const agentDir = getAgentDir();
-  // Gate untrusted project extensions: enumerating models still imports and
-  // runs a repository's .pi/extensions factories, so honor project trust here
-  // too (see lib/project-trust.ts, #236).
-  const trustReloadOptions = projectTrustReloadOptions(cwd, agentDir);
-  const services = await createAgentSessionServices({
-    cwd,
-    agentDir,
-    ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
-  });
-  const modelError = services.modelRuntime.getError();
-  const settings: SettingsManager = services.settingsManager;
+  let modelRuntime: ModelRuntime;
+  let settings: SettingsManager;
+  if (lite) {
+    // A Lite read never imports the extension set, so it needs neither the
+    // project-trust gate nor the resource loader.
+    modelRuntime = await createLiteModelRuntime();
+    settings = SettingsManager.create(cwd, agentDir);
+  } else {
+    // Gate untrusted project extensions: enumerating models still imports and
+    // runs a repository's .pi/extensions factories, so honor project trust here
+    // too (see lib/project-trust.ts, #236).
+    const trustReloadOptions = projectTrustReloadOptions(cwd, agentDir);
+    const services = await createAgentSessionServices({
+      cwd,
+      agentDir,
+      ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
+    });
+    modelRuntime = services.modelRuntime;
+    settings = services.settingsManager;
+  }
+  const modelError = modelRuntime.getError();
   // `enabledModels` supports globs and fuzzy patterns, so resolve it the same
   // way the CLI does instead of comparing pattern strings literally (#307).
   const scope = await resolveVisibleModels(
-    services.modelRuntime,
+    modelRuntime,
     settings.getEnabledModels(),
   );
   const { visible, thinkingLevelPins, warnings } = scope;
@@ -109,6 +127,7 @@ const EMPTY_MODELS: ModelsData = {
 export async function GET(req: Request) {
   const requestedCwd = new URL(req.url).searchParams.get("cwd") || process.cwd();
   const cwd = resolve(requestedCwd);
+  const lite = isLiteRequest(req);
 
   let cwdStat;
   try {
@@ -125,7 +144,12 @@ export async function GET(req: Request) {
   }
 
   try {
-    return Response.json(await loadModelsWithCache(cwd, () => loadModels(cwd)));
+    // The key carries the mode: a Lite and a normal load see different
+    // catalogs and must not share a cache entry.
+    return Response.json(await loadModelsWithCache(
+      modelsCacheKey(cwd, lite),
+      () => loadModels(cwd, lite),
+    ));
   } catch {
     return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));
   }

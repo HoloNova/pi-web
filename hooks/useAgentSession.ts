@@ -27,6 +27,10 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
 import { userMessageKey } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
+import { getClientId } from "@/lib/client-identity";
+import { liteModeRequestHeaders } from "@/lib/lite-request";
+import { useLiteMode } from "@/hooks/useLiteMode";
+import { useLiteSessionLifecycle } from "@/hooks/useLiteSessionLifecycle";
 import { isSystemMessageEvent } from "@/lib/agent-event-wire";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
 import { updateExtensionWidgets } from "@/lib/extension-widgets";
@@ -354,6 +358,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [extensionStatuses, setExtensionStatuses] = useState<ExtensionStatusItem[]>([]);
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
+  const [liteModeEnabled] = useLiteMode();
 
   const eventConnectionRef = useRef<AgentEventConnection | null>(null);
   const eventStreamGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -391,6 +396,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const modelSwitchPendingRef = useRef(false);
   const draftKeyAliasesRef = useRef(new Map<string, string>());
   const sessionHookMountedRef = useRef(true);
+  // Lite mode gates whether this page holds presence; when off the hook must
+  // behave exactly like before (the stream stays open while mounted).
+  const liteModeEnabledRef = useRef(false);
+  const liteHoldRef = useRef(true);
   // In-flight session reads, keyed by session id (or force:<id> for fresh reads).
   const loadFlightsRef = useRef(new Map<string, Promise<unknown>>());
   // Latest settled view state, readable from the unmount cleanup without
@@ -403,6 +412,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const hasEarlierMessagesRef = useRef(false);
 
   sessionPropIdRef.current = session?.id ?? null;
+  liteModeEnabledRef.current = liteModeEnabled;
   dataRef.current = data;
   messagesRef.current = messages;
   entryIdsRef.current = entryIds;
@@ -412,11 +422,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   if (!eventConnectionRef.current) {
     eventConnectionRef.current = new AgentEventConnection({
-      createSource: (sid) => new EventSource(`/api/agent/${encodeURIComponent(sid)}/events`),
+      createSource: (sid) => new EventSource(
+        `/api/agent/${encodeURIComponent(sid)}/events?client=${encodeURIComponent(getClientId())}`,
+      ),
       onEvent: (event) => handleAgentEventRef.current?.(event as AgentEvent),
       shouldMaintain: (sid) => (
         sessionHookMountedRef.current
         && sessionIdRef.current === sid
+        && (!liteModeEnabledRef.current || liteHoldRef.current)
         && (
           agentRunningRef.current
           || eventStreamGraceActiveRef.current
@@ -900,6 +913,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
     const renewLease = async () => {
       if (disposed || renewing) return;
+      // Lite mode drops presence once the session is no longer held (idle past
+      // its deadline, or released); a released page must not keep renewing —
+      // and so keep alive — the session's leases.
+      if (liteModeEnabledRef.current && !liteHoldRef.current) return;
       renewing = true;
       try {
         const response = await fetch(`/api/agent/${encodeURIComponent(sid)}/lease`, {
@@ -935,6 +952,37 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [closeEvents, maintainEventsConnected, session?.id]);
+
+  // Lite mode's own presence: held while this page has the selected session
+  // open with recent real interaction — hidden or not — and released on
+  // switch/close/5-minute idle so the server can reclaim the idle wrapper once
+  // no other tab/device still needs it.
+  const handleLiteHoldChange = useCallback((hold: boolean, sid: string) => {
+    const changed = liteHoldRef.current !== hold;
+    liteHoldRef.current = hold;
+    if (!changed) return;
+    if (hold) {
+      // Waking from dormancy: reconnect so the stream re-snapshots live state.
+      closeEvents();
+      maintainEventsConnected(sid);
+    } else if (liteModeEnabledRef.current) {
+      closeEvents();
+    }
+  }, [closeEvents, maintainEventsConnected]);
+
+  useLiteSessionLifecycle({
+    sessionId: session?.id ?? null,
+    enabled: liteModeEnabled,
+    onHoldChange: handleLiteHoldChange,
+  });
+
+  // Turning Lite off must restore normal-mode warmth for the selected session,
+  // including one that went dormant (stream already closed) before the toggle.
+  useEffect(() => {
+    if (liteModeEnabled) return;
+    const sid = sessionIdRef.current;
+    if (sid) maintainEventsConnected(sid);
+  }, [liteModeEnabled, maintainEventsConnected]);
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
@@ -1810,7 +1858,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
     let d: ModelsResponse;
     try {
-      const res = await fetch(modelsUrl, signal ? { signal } : undefined);
+      // A Lite tab asks for the built-in/models.json catalog, which the server
+      // answers without loading extensions.
+      const res = await fetch(modelsUrl, {
+        ...(signal ? { signal } : {}),
+        headers: liteModeRequestHeaders(),
+      });
       if (!res.ok) {
         let detail = "";
         try {
@@ -2355,6 +2408,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
   // Load the model list with bounded retries; loadModels exposes each failure.
+  // Re-runs when this tab's Lite mode changes: the server answers the two modes
+  // from different catalogs.
   useEffect(() => {
     const controller = new AbortController();
     (async () => {
@@ -2372,7 +2427,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     })();
     return () => controller.abort();
-  }, [loadModels, modelsRefreshKey]);
+  }, [loadModels, modelsRefreshKey, liteModeEnabled]);
 
   useEffect(() => {
     if (!compactResult) return;

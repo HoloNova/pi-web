@@ -6,6 +6,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import type { SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
 import { sendAgentCommand } from "@/lib/agent-client";
 import type { ModelsData } from "@/lib/models-cache";
+import { liteModeRequestHeaders } from "@/lib/lite-request";
 import { isSubagentProfileOverridden } from "@/lib/subagent-profile-precedence";
 import type { SubagentProfile, SubagentScope, SubagentWritableScope } from "@/lib/subagents";
 import {
@@ -259,7 +260,10 @@ export function AgentsConfig({
     setModelsError(null);
     void (async () => {
       try {
-        const response = await fetch(`/api/models?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal });
+        const response = await fetch(`/api/models?cwd=${encodeURIComponent(cwd)}`, {
+          signal: controller.signal,
+          headers: liteModeRequestHeaders(),
+        });
         const data = await response.json() as Partial<ModelsData> & { error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
         setModelOptions(data.modelList ?? []);

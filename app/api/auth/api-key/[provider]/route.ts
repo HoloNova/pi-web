@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { removeStoredCredentialIfType, storeProviderCredential } from "@/lib/provider-credential-store";
-import { createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { isLiteRequest } from "@/lib/lite-request";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,11 @@ export async function POST(req: Request, { params }: Params) {
     if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
       return NextResponse.json({ error: "apiKey is required" }, { status: 400 });
     }
-    const modelRuntime = await createModelRuntimeWithExtensions();
+    // A Lite tab only ever offers built-in and models.json providers, so the
+    // built-in catalog carries the auth method and no extension needs to load.
+    const modelRuntime = isLiteRequest(req)
+      ? await createLiteModelRuntime()
+      : await createModelRuntimeWithExtensions();
     const apiKeyAuth = modelRuntime.getProvider(provider)?.auth.apiKey;
     if (!apiKeyAuth?.login) {
       throw new Error(`${provider} does not support API key login`);
