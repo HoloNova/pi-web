@@ -34,19 +34,24 @@ function targetBounds() {
  * Current service footprint vs the stored target. The footprint is read
  * read-only (cgroup v2 first, Node RSS as a labelled fallback). A Lite request
  * also runs one bounded pressure pass: near or over target, it reclaims the
- * oldest idle sessions through the milestone-1 path. A normal-mode request only
- * reads — it never triggers a reclaim, so the target can never close a
- * normal-mode session.
+ * oldest idle sessions through the milestone-1 path. A normal-mode request
+ * reports the inactive shape instead: the target is a Lite-mode-only concept,
+ * so there is no target, state, or usage to report and no reclaim to run. The
+ * stored value stays on disk but is inert while Lite mode is off.
  */
 export async function GET(req: Request) {
+  if (!isLiteRequest(req)) {
+    return NextResponse.json({ active: false }, { headers: NO_STORE });
+  }
   try {
     const targetMiB = readMemoryTargetMiB();
     const reading = readServiceMemoryReading();
     const state = memoryPressureState(reading.bytes, targetMiB);
-    const reclaim = isLiteRequest(req) && shouldReclaimForMemoryState(state)
+    const reclaim = shouldReclaimForMemoryState(state)
       ? runMemoryPressureReclaim()
       : null;
     return NextResponse.json({
+      active: true,
       targetMiB,
       ...targetBounds(),
       usedBytes: reading.bytes,
@@ -65,10 +70,19 @@ export async function GET(req: Request) {
   }
 }
 
-/** PUT /api/memory — persist a new service-wide target in MiB. */
+/**
+ * PUT /api/memory — persist a new service-wide target in MiB. Lite mode only:
+ * without the Lite header the target does not apply, so the write is refused.
+ */
 export async function PUT(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403, headers: NO_STORE });
+  }
+  if (!isLiteRequest(req)) {
+    return NextResponse.json(
+      { error: "The memory target is a Lite-mode-only setting" },
+      { status: 409, headers: NO_STORE },
+    );
   }
   if (!hasJsonContentType(req)) {
     return NextResponse.json(

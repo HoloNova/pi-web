@@ -2,7 +2,13 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteIdleMinutes } from "@/hooks/useLiteIdleMinutes";
 import { useLiteMode } from "@/hooks/useLiteMode";
+import {
+  MAX_LITE_IDLE_MINUTES,
+  MIN_LITE_IDLE_MINUTES,
+  isValidLiteIdleMinutes,
+} from "@/lib/lite-lifecycle";
 import { useTheme } from "@/hooks/useTheme";
 import { THEME_OPTIONS } from "@/lib/theme";
 import { ThemeIcon } from "./ThemeIcon";
@@ -69,6 +75,8 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
   const [liteModeEnabled, setLiteModeEnabled] = useLiteMode();
+  const [idleMinutes, setIdleMinutes] = useLiteIdleMinutes();
+  const [idleDraft, setIdleDraft] = useState(String(idleMinutes));
   const [shellSettings, setShellSettings] = useState<ShellToolSettingsResponse | null>(null);
   const [shellSaving, setShellSaving] = useState(false);
   const [shellError, setShellError] = useState<string | null>(null);
@@ -86,6 +94,12 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
       .then((data: { enabled?: boolean } | null) => setWebAuthEnabled(data?.enabled === true))
       .catch(() => {});
   }, []);
+
+  // Keep the number field in step with the live preference (including a change
+  // made in another tab).
+  useEffect(() => {
+    setIdleDraft(String(idleMinutes));
+  }, [idleMinutes]);
 
   const logOut = async () => {
     setLoggingOut(true);
@@ -300,7 +314,31 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           />
         </div>
         <p className="settings-general-description">{t("settings.liteModeDescription")}</p>
-        <MemoryTargetControl />
+        {liteModeEnabled && (
+          <>
+            <p className="settings-general-description">{t("settings.liteIdleMinutesDescription")}</p>
+            <div className="settings-shell-option settings-idle-minutes">
+              <label htmlFor="settings-lite-idle-minutes">{t("settings.liteIdleMinutes")}</label>
+              <input
+                id="settings-lite-idle-minutes"
+                type="number"
+                inputMode="numeric"
+                min={MIN_LITE_IDLE_MINUTES}
+                max={MAX_LITE_IDLE_MINUTES}
+                step={1}
+                value={idleDraft}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setIdleDraft(raw);
+                  const next = Number(raw);
+                  if (isValidLiteIdleMinutes(next)) setIdleMinutes(next);
+                }}
+                onBlur={() => setIdleDraft(String(idleMinutes))}
+              />
+            </div>
+            <MemoryTargetControl />
+          </>
+        )}
       </section>
 
       <section className="settings-general-section">

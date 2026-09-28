@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import { useLiteMode } from "@/hooks/useLiteMode";
 import { useMemoryStatus } from "@/hooks/useMemoryStatus";
-import type { MemoryStatusResponse, MemoryTargetResponse } from "@/lib/api-types";
+import { putMemoryTarget } from "@/lib/memory-status-store";
+import type { MemoryStatusActiveResponse } from "@/lib/api-types";
 
-const STATE_LABEL_KEYS: Record<MemoryStatusResponse["state"], string> = {
+const STATE_LABEL_KEYS: Record<MemoryStatusActiveResponse["state"], string> = {
   ok: "settings.memoryTargetStateOk",
   near: "settings.memoryTargetStateNear",
   over: "settings.memoryTargetStateOver",
@@ -16,47 +16,41 @@ const STATE_LABEL_KEYS: Record<MemoryStatusResponse["state"], string> = {
  * Service-wide memory target, edited in General settings. It is a soft target
  * for Pi-Web's own footprint: it drives Lite mode's idle-session reclaim and is
  * never a hard limit — the service's systemd MemoryHigh/MemoryMax guardrails
- * stay the real limit. The control reads the target once when it mounts (Lite
- * mode's chat notice owns the polling), and refreshes after a save.
+ * stay the real limit. It is rendered only while Lite mode is on, and it reads
+ * and writes through the shared status store, so its numbers match the chat
+ * card and a save is broadcast to it immediately.
  */
 export function MemoryTargetControl() {
   const { t } = useI18n();
-  const [liteModeEnabled] = useLiteMode();
-  const { status, error, refresh } = useMemoryStatus({ enabled: true, poll: false });
+  const { status, error } = useMemoryStatus({ enabled: true, poll: true });
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const targetMiB = status?.targetMiB;
+  const active = status && status.active ? status : null;
+  const targetMiB = active?.targetMiB;
   useEffect(() => {
     if (targetMiB !== undefined) setDraft(String(targetMiB));
   }, [targetMiB]);
 
-  const invalidRange = status
-    ? t("settings.memoryTargetInvalid", { min: String(status.minMiB), max: String(status.maxMiB) })
+  const invalidRange = active
+    ? t("settings.memoryTargetInvalid", { min: String(active.minMiB), max: String(active.maxMiB) })
     : "";
 
   const save = async () => {
-    if (!status) return;
+    if (!active) return;
     const next = Number(draft);
     setSaveError(null);
     setSaved(false);
-    if (!Number.isInteger(next) || next < status.minMiB || next > status.maxMiB) {
+    if (!Number.isInteger(next) || next < active.minMiB || next > active.maxMiB) {
       setSaveError(invalidRange);
       return;
     }
     setSaving(true);
     try {
-      const response = await fetch("/api/memory", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetMiB: next }),
-      });
-      const data = await response.json() as MemoryTargetResponse & { error?: string };
-      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+      await putMemoryTarget(next);
       setSaved(true);
-      await refresh();
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -64,9 +58,9 @@ export function MemoryTargetControl() {
     }
   };
 
-  const state = status?.state ?? "ok";
-  const usageText = status
-    ? t("settings.memoryTargetUsage", { used: String(status.usedMiB), target: String(status.targetMiB) })
+  const state = active?.state ?? "ok";
+  const usageText = active
+    ? t("settings.memoryTargetUsage", { used: String(active.usedMiB), target: String(active.targetMiB) })
     : t("settings.memoryTargetLoading");
 
   return (
@@ -78,11 +72,11 @@ export function MemoryTargetControl() {
           id="settings-memory-target"
           type="number"
           inputMode="numeric"
-          min={status?.minMiB ?? 1}
-          max={status?.maxMiB ?? 1}
+          min={active?.minMiB ?? 1}
+          max={active?.maxMiB ?? 1}
           step={1}
           value={draft}
-          disabled={!status || saving}
+          disabled={!active || saving}
           onChange={(event) => {
             setDraft(event.target.value);
             setSaved(false);
@@ -91,7 +85,7 @@ export function MemoryTargetControl() {
         <button
           type="button"
           className="config-button config-button-small config-button-secondary"
-          disabled={!status || saving || draft === String(status.targetMiB)}
+          disabled={!active || saving || draft === String(active.targetMiB)}
           onClick={() => void save()}
         >
           {saving ? t("settings.memoryTargetSaving") : t("settings.memoryTargetSave")}
@@ -99,16 +93,14 @@ export function MemoryTargetControl() {
       </div>
       <p className="settings-memory-readout" data-state={state}>
         <span className="settings-memory-state" data-state={state}>
-          {status ? t(STATE_LABEL_KEYS[state]) : t("settings.memoryTargetLoading")}
+          {active ? t(STATE_LABEL_KEYS[state]) : t("settings.memoryTargetLoading")}
         </span>
         <span>{usageText}</span>
       </p>
-      {status?.approximate && (
+      {active?.approximate && (
         <p className="settings-general-description">{t("settings.memoryTargetFallback")}</p>
       )}
-      {liteModeEnabled && (
-        <p className="settings-general-description">{t("settings.memoryTargetLiteHint")}</p>
-      )}
+      <p className="settings-general-description">{t("settings.memoryTargetLiteHint")}</p>
       {saveError && <p role="alert" className="settings-general-error">{saveError}</p>}
       {error && <p role="alert" className="settings-general-error">{error}</p>}
       {saved && <p role="status" className="settings-memory-saved">{t("settings.memoryTargetSaved")}</p>}
