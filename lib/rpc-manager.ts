@@ -17,6 +17,7 @@ import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trus
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider, onSessionPresenceReleased } from "./session-liveness";
+import { hasDelegatedWorkRunning } from "./delegated-work";
 import { runIdleReclaimPass, type ReclaimCandidate, type ReclaimPassResult } from "./lite-memory-reclaim";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
@@ -39,7 +40,7 @@ import {
   readSubagentSessionResources,
   SUBAGENT_CONTROL_TOOL_NAMES,
 } from "./subagents";
-import { createSubagentController } from "./subagent-runtime";
+import { createSubagentController, hasActiveSubagentRunForParent } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
@@ -150,6 +151,13 @@ export function resolveSessionIdleTimeoutMs(
 
 const SESSION_IDLE_TIMEOUT_MS = resolveSessionIdleTimeoutMs();
 
+/**
+ * How soon a shutdown deferred by delegated work is re-checked. A child run can
+ * finish long before the next idle window would fire; on this cadence the
+ * session closes shortly after the child is done instead of minutes later.
+ */
+const DELEGATED_RETRY_MS = 30 * 1000;
+
 const SESSION_REPLACEMENT_COMMAND_TYPES = new Set(["fork", "clone"]);
 const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
   "get_state",
@@ -246,6 +254,7 @@ export class AgentSessionWrapper {
   private readonly suppressCompletionNotifications: boolean;
   private unsubscribe: (() => void) | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private delegatedRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private onDestroyCallback: (() => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private sessionShutdownEmitted = false;
@@ -314,6 +323,13 @@ export class AgentSessionWrapper {
   private attemptIdleReclaim(): void {
     if (!this._alive || this.closing || !this.idleReclaimRequested) return;
     if (this.isRunning()) return;
+    if (this.hasDelegatedWork()) {
+      // A child run is still working inside this wrapper. Keep the request armed
+      // and re-check on the delegated cadence instead of waiting for a retry that
+      // only the next presence release would have triggered.
+      this.armDelegatedRetry();
+      return;
+    }
     if (hasActiveSessionLivenessProvider({
       sessionId: this.sessionId,
       sessionFile: this.sessionFile || undefined,
@@ -324,8 +340,53 @@ export class AgentSessionWrapper {
     });
   }
 
+  /**
+   * Re-check a deferred shutdown once delegated children have had time to
+   * finish. Re-arms itself while they keep working, and gives up silently when a
+   * viewer returns — that path owns the session again.
+   */
+  private armDelegatedRetry(): void {
+    if (this.delegatedRetryTimer || !this._alive || this.closing) return;
+    this.delegatedRetryTimer = setTimeout(() => {
+      this.delegatedRetryTimer = null;
+      if (!this._alive || this.closing) return;
+      if (this.isRunning() || this.hasDelegatedWork()) {
+        this.armDelegatedRetry();
+        return;
+      }
+      if (hasActiveSessionLivenessProvider({
+        sessionId: this.sessionId,
+        sessionFile: this.sessionFile || undefined,
+      })) return;
+      void this.shutdown().catch((error) => {
+        console.error("[pi-web] failed to shut down idle session:", error instanceof Error ? error.message : error);
+      });
+    }, DELEGATED_RETRY_MS);
+    this.delegatedRetryTimer.unref?.();
+  }
+
   isRunning(): boolean {
     return this._alive && (this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning);
+  }
+
+  /**
+   * Delegated children still working under this session: a built-in subagent run
+   * whose parent is this session, or a child run from any plugin that is still
+   * writing under this session's artifact directory. An async subagent outlives
+   * the parent turn it was started from, so `isRunning()` alone cannot see it.
+   */
+  hasDelegatedWork(): boolean {
+    if (!this._alive) return false;
+    if (hasActiveSubagentRunForParent(this.sessionId)) return true;
+    return hasDelegatedWorkRunning({ sessionId: this.sessionId, sessionFile: this.sessionFile });
+  }
+
+  /**
+   * The wrapper's own turn OR delegated work still running underneath it. Every
+   * path that closes a session asks this, so a child run is never cut off.
+   */
+  isBusy(): boolean {
+    return this.isRunning() || this.hasDelegatedWork();
   }
 
   /**
@@ -516,12 +577,22 @@ export class AgentSessionWrapper {
     if (SESSION_IDLE_TIMEOUT_MS === 0) return;
     if (!this.isRunning()) this.forceShutdownOnIdle = false;
     this.idleTimer = setTimeout(() => {
-      if (!this.forceShutdownOnIdle && (this.isRunning() || hasActiveSessionLivenessProvider({
-        sessionId: this.sessionId,
-        sessionFile: this.sessionFile || undefined,
-      }))) {
-        this.resetIdleTimer();
-        return;
+      if (!this.forceShutdownOnIdle) {
+        if (this.isRunning() || hasActiveSessionLivenessProvider({
+          sessionId: this.sessionId,
+          sessionFile: this.sessionFile || undefined,
+        })) {
+          this.resetIdleTimer();
+          return;
+        }
+        if (this.hasDelegatedWork()) {
+          // A child run outlives the idle window. Do not wait out another full
+          // one: re-check on the delegated cadence and close once it finishes.
+          this.idleTimer = null;
+          this.idleReclaimRequested = true;
+          this.armDelegatedRetry();
+          return;
+        }
       }
       void this.shutdown().catch((error) => {
         console.error("[pi-web] failed to shut down idle session:", error instanceof Error ? error.message : error);
@@ -1074,6 +1145,7 @@ export class AgentSessionWrapper {
     // EventSource errors and reconnects instead of staying OPEN on a dead wrapper.
     this.emit({ type: "session_shutdown" });
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.delegatedRetryTimer) clearTimeout(this.delegatedRetryTimer);
     if (this.inner.isBashRunning) this.inner.abortBash();
     this.unsubscribe?.();
     for (const pending of this.pendingUiResponses.values()) pending.cancel();
@@ -1747,12 +1819,23 @@ function getRegistry(): Map<string, AgentSessionWrapper> {
 export function reclaimIdleRpcSession(sessionId: string): boolean {
   const wrapper = getRegistry().get(sessionId);
   if (!wrapper || !wrapper.isAlive() || wrapper.isClosing()) return false;
-  const idle = !wrapper.isRunning() && !hasActiveSessionLivenessProvider({
+  const idle = !wrapperIsBusy(wrapper) && !hasActiveSessionLivenessProvider({
     sessionId: wrapper.sessionId,
     sessionFile: wrapper.sessionFile || undefined,
   });
   wrapper.requestIdleReclaim();
   return idle;
+}
+
+/**
+ * Busy means the wrapper's own turn is in flight *or* delegated work is still
+ * running underneath it. Fakes in tests may only implement `isRunning()`, so
+ * each capability is probed rather than assumed.
+ */
+function wrapperIsBusy(wrapper: AgentSessionWrapper): boolean {
+  if (typeof wrapper.isBusy === "function") return wrapper.isBusy();
+  if (typeof wrapper.hasDelegatedWork === "function") return wrapper.isRunning() || wrapper.hasDelegatedWork();
+  return wrapper.isRunning();
 }
 
 /**
@@ -1767,6 +1850,7 @@ export function collectMemoryReclaimCandidates(): ReclaimCandidate[] {
       sessionId: wrapper.sessionId || registryId,
       lastActivityAt: wrapper.lastActivityAt(),
       running: wrapper.isRunning(),
+      delegated: typeof wrapper.hasDelegatedWork === "function" ? wrapper.hasDelegatedWork() : false,
       viewed: hasActiveSessionLivenessProvider({
         sessionId: wrapper.sessionId,
         sessionFile: wrapper.sessionFile || undefined,
@@ -2031,7 +2115,7 @@ export function hasBusyRpcSessionForCwd(cwd: string): boolean {
   const targetCwd = normalizeRpcCwd(cwd);
   if (getStartingSessionCwds().has(targetCwd)) return true;
   return Array.from(getRegistry().values()).some(
-    (session) => normalizeRpcCwd(session.cwd) === targetCwd && session.isRunning(),
+    (session) => normalizeRpcCwd(session.cwd) === targetCwd && wrapperIsBusy(session),
   );
 }
 
@@ -2047,7 +2131,7 @@ export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
 export function getRunningRpcSessionIds(): string[] {
   const ids = new Set<string>();
   for (const [sessionId, session] of getRegistry()) {
-    if (session.isRunning()) ids.add(session.sessionId || sessionId);
+    if (wrapperIsBusy(session)) ids.add(session.sessionId || sessionId);
   }
   return [...ids];
 }

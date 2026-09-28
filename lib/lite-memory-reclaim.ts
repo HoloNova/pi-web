@@ -9,6 +9,12 @@ export interface ReclaimCandidate {
   lastActivityAt: number;
   /** A turn, tool call, compaction or shell command is in flight. */
   running: boolean;
+  /**
+   * Delegated children (async subagent runs) are still working underneath this
+   * session. The parent turn has already returned, so `running` is false and
+   * only this flag protects the child from being killed with its wrapper.
+   */
+  delegated?: boolean;
   /** Another tab/device still holds this session (presence or an SSE stream). */
   viewed: boolean;
 }
@@ -22,9 +28,10 @@ export interface ReclaimPlan {
 
 /**
  * Oldest first by last real activity; ties break on session id so the order is
- * stable across calls. A wrapper that is running or has another live viewer is
- * never in `reclaim`: closing it would cut a turn or tool call short, or pull a
- * session out from under a page that is still looking at it.
+ * stable across calls. A wrapper that is running, has delegated work in flight,
+ * or has another live viewer is never in `reclaim`: closing it would cut a turn
+ * or a child run short, or pull a session out from under a page that is still
+ * looking at it.
  */
 export function planIdleReclaim(candidates: readonly ReclaimCandidate[]): ReclaimPlan {
   const ordered = [...candidates].sort(
@@ -33,7 +40,7 @@ export function planIdleReclaim(candidates: readonly ReclaimCandidate[]): Reclai
   const reclaim: string[] = [];
   const deferred: string[] = [];
   for (const candidate of ordered) {
-    if (candidate.running || candidate.viewed) deferred.push(candidate.sessionId);
+    if (candidate.running || candidate.viewed || candidate.delegated) deferred.push(candidate.sessionId);
     else reclaim.push(candidate.sessionId);
   }
   return { reclaim, deferred };
@@ -48,6 +55,8 @@ export interface ReclaimPassResult {
   running: number;
   /** Wrappers held by another tab/device (skipped entirely). */
   viewed: number;
+  /** Wrappers with delegated children still working (waits for the child to finish). */
+  delegated: number;
 }
 
 export interface ReclaimPassHooks {
@@ -59,10 +68,10 @@ export interface ReclaimPassHooks {
 
 /**
  * Run one pressure pass over the given candidates. Only idle, unviewed wrappers
- * are asked to close; a running but unviewed wrapper is marked and reclaimed
- * after it settles. A viewed wrapper is left completely untouched. When nothing
- * is reclaimable the pass closes nothing and reports the counts, which is how
- * an over-target service stays over target instead of escalating.
+ * are asked to close; a running or delegated-but-unviewed wrapper is marked and
+ * reclaimed after it settles. A viewed wrapper is left completely untouched.
+ * When nothing is reclaimable the pass closes nothing and reports the counts,
+ * which is how an over-target service stays over target instead of escalating.
  */
 export function runIdleReclaimPass(
   candidates: readonly ReclaimCandidate[],
@@ -76,13 +85,15 @@ export function runIdleReclaimPass(
   for (const sessionId of plan.deferred) {
     const candidate = candidates.find((entry) => entry.sessionId === sessionId);
     // A viewed wrapper is left alone: milestone-1 presence release already
-    // handles it, and closing it here would surprise an active viewer.
-    if (candidate?.running && !candidate.viewed) hooks.defer(sessionId);
+    // handles it, and closing it here would surprise an active viewer. A
+    // delegated child is worth arming so it closes as soon as it finishes.
+    if ((candidate?.running || candidate?.delegated) && !candidate.viewed) hooks.defer(sessionId);
   }
   return {
     reclaimed,
     reclaimable: plan.reclaim.length,
     running: candidates.filter((candidate) => candidate.running).length,
     viewed: candidates.filter((candidate) => candidate.viewed).length,
+    delegated: candidates.filter((candidate) => candidate.delegated).length,
   };
 }

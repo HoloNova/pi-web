@@ -39,6 +39,7 @@ import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
 import { SubagentQueue } from "./subagent-queue";
 import { addWorktree, removeWorktree } from "./worktree";
+import { ACTIVE_SUBAGENT_STATUSES } from "./delegated-work";
 import { randomUUID } from "node:crypto";
 
 interface HostSession {
@@ -101,6 +102,21 @@ function lastAssistantError(sessionManager: { getEntries?: () => unknown }): str
 function getSubagentRuns(): Map<string, StoredSubagentExecution> {
   if (!globalThis.__piSubagentRuns) globalThis.__piSubagentRuns = new Map();
   return globalThis.__piSubagentRuns;
+}
+
+/**
+ * True while a built-in subagent run started from this parent session is still
+ * starting, queued or running. The reclaim paths ask this before closing a
+ * wrapper: a parent turn that has already returned still owns a child that is
+ * executing inside the same process, so closing the wrapper would kill it.
+ */
+export function hasActiveSubagentRunForParent(parentSessionId: string): boolean {
+  if (!parentSessionId) return false;
+  for (const stored of getSubagentRuns().values()) {
+    if (stored.run.parentSessionId !== parentSessionId) continue;
+    if (ACTIVE_SUBAGENT_STATUSES.has(stored.run.status)) return true;
+  }
+  return false;
 }
 
 function getSubagentQueue(): SubagentQueue<SubagentRunInfo> {

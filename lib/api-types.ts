@@ -90,6 +90,8 @@ export interface MemoryReclaimResponse {
   reclaimable: number;
   running: number;
   viewed: number;
+  /** Sessions left alone because a delegated child run is still working. */
+  delegated: number;
 }
 
 /**
