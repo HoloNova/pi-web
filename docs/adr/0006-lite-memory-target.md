@@ -72,6 +72,24 @@ session without a reload and without dropping presence. The server-side 90 s
 presence-lease TTL and the never-interrupt-a-running-task rule are unchanged;
 the option only controls when an idle page releases its session.
 
+**A session with delegated work running under it is never closed.**
+`AgentSessionWrapper.isRunning()` only describes the wrapper's own turn (a
+pending prompt, streaming, compacting, bash). An async subagent run keeps
+working after the parent turn has returned, so a session like that *looks* idle
+while a child is still executing — inside the same pi process for in-process
+children. `isBusy()` therefore means "own turn **or** delegated work still
+running", and every path that closes a session asks it: Lite's presence-release
+reclaim, the pressure pass, and the pre-existing 10-minute idle shutdown.
+`lib/delegated-work.ts` answers from two signals — recent writes anywhere under
+`<session file without .jsonl>/` (plugin-agnostic: every child run writes its own
+session there), and the pi-subagents run registry's `status.json` when it is
+readable (a refinement, never a dependency). Unreadable state counts as busy, and
+a shutdown deferred this way is retried every 30 s so the session closes shortly
+after the child finishes instead of waiting out another idle window.
+`getRunningRpcSessionIds()` / `hasBusyRpcSessionForCwd()` use the same predicate,
+so `/api/agent/running` (and the nightly restart guard that reads it) also leaves
+a session with a live child alone.
+
 **No new server timer.** The pass runs only when a visible Lite tab polls
 `GET /api/memory` (10 s, paused while hidden), so an idle Pi-Web with no Lite tab
 does no extra work. The endpoint is the only status surface; the settings
@@ -83,6 +101,12 @@ and every saved target to both surfaces at once.
 
 - `AgentSessionWrapper.lastActivityAt()` was added as the LRU key; it is stamped
   by `resetIdleTimer()` (real activity), so keep-warm polling does not count.
+- Delegated-work detection is deliberately conservative: it can hold an idle
+  session up to `PI_WEB_DELEGATED_ACTIVITY_WINDOW_MS` (default 3 minutes) past a
+  child's last write, and the registry probe is skipped entirely when it cannot
+  be read. Holding a session a little longer is recoverable; killing a child
+  mid-run is not. Answers are cached for 10 s so a polling page cannot turn the
+  check into a directory walk.
 - The threshold is a named constant (`MEMORY_NEAR_TARGET_RATIO = 0.9`) shared by
   the server state and the UI chip.
 - A normal-mode run longer than the 90 s SSE lease can be marked for reclaim
