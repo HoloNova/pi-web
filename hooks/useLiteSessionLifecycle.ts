@@ -5,8 +5,10 @@ import { getClientId } from "@/lib/client-identity";
 import {
   LITE_INTERACTION_EVENTS,
   liteIdleDeadlineIn,
+  liteIdleMinutesToMs,
   shouldHoldLitePresence,
 } from "@/lib/lite-lifecycle";
+import { useLiteIdleMinutes } from "@/hooks/useLiteIdleMinutes";
 import { createLitePresenceController, type LitePresenceController } from "@/lib/lite-presence";
 
 export const LITE_PRESENCE_RENEW_INTERVAL_MS = 30_000;
@@ -45,13 +47,15 @@ export interface LiteSessionLifecycleOptions {
 /**
  * Owns this tab's Lite-mode presence for the selected session. A mounted page
  * holds presence while Lite mode is on and the last real interaction is within
- * the five-minute deadline (see lib/lite-lifecycle.ts); visibility does not
+ * the configured idle deadline (see lib/lite-lifecycle.ts); visibility does not
  * gate it, so switching tabs, minimizing, or switching applications keeps the
- * session warm. Presence is dropped by a conversation switch (this effect's
- * cleanup), a page close (`pagehide`), the idle deadline, or the 90 s server
- * lease TTL when a frozen tab stops renewing. Dropping it lets the server
- * reclaim the idle wrapper when no other tab/device holds the session. Normal
- * mode never touches presence.
+ * session warm. The deadline is the device-local idle-minutes option, read live:
+ * changing it re-arms the deadline for the current session without dropping
+ * presence or reloading. Presence is otherwise dropped by a conversation switch
+ * (this effect's cleanup), a page close (`pagehide`), the idle deadline, or the
+ * 90 s server lease TTL when a frozen tab stops renewing. Dropping it lets the
+ * server reclaim the idle wrapper when no other tab/device holds the session.
+ * Normal mode never touches presence.
  */
 export function useLiteSessionLifecycle({
   sessionId,
@@ -60,6 +64,14 @@ export function useLiteSessionLifecycle({
 }: LiteSessionLifecycleOptions): void {
   const onHoldChangeRef = useRef(onHoldChange);
   onHoldChangeRef.current = onHoldChange;
+
+  const [idleMinutes] = useLiteIdleMinutes();
+  const idleTimeoutMsRef = useRef(liteIdleMinutesToMs(idleMinutes));
+  idleTimeoutMsRef.current = liteIdleMinutesToMs(idleMinutes);
+  // Set by the presence effect, invoked when the idle-minutes preference
+  // changes: it re-schedules the deadline and re-evaluates without tearing down
+  // (and re-acquiring) the current hold.
+  const rearmRef = useRef<(() => void) | null>(null);
 
   const controllerRef = useRef<LitePresenceController | null>(null);
   if (!controllerRef.current && typeof window !== "undefined") {
@@ -89,6 +101,7 @@ export function useLiteSessionLifecycle({
         mounted: true,
         lastInteractionAt,
         now: Date.now(),
+        idleTimeoutMs: idleTimeoutMsRef.current,
       });
       if (hold === holding) return;
       holding = hold;
@@ -112,7 +125,7 @@ export function useLiteSessionLifecycle({
       idleTimer = setTimeout(() => {
         idleTimer = null;
         evaluate();
-      }, liteIdleDeadlineIn(lastInteractionAt, Date.now()));
+      }, liteIdleDeadlineIn(lastInteractionAt, Date.now(), idleTimeoutMsRef.current));
     };
 
     const onInteraction = () => {
@@ -142,7 +155,16 @@ export function useLiteSessionLifecycle({
     scheduleIdle();
     evaluate();
 
+    // A live idle-minutes change re-arms this deadline; the new value is read
+    // from idleTimeoutMsRef.current, so no presence is dropped unless the new
+    // deadline is already past.
+    rearmRef.current = () => {
+      scheduleIdle();
+      evaluate();
+    };
+
     return () => {
+      rearmRef.current = null;
       for (const event of LITE_INTERACTION_EVENTS) {
         window.removeEventListener(event, onInteraction);
       }
@@ -157,4 +179,8 @@ export function useLiteSessionLifecycle({
       }
     };
   }, [enabled, sessionId]);
+
+  useEffect(() => {
+    rearmRef.current?.();
+  }, [idleMinutes]);
 }

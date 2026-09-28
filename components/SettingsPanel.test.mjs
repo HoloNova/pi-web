@@ -154,9 +154,9 @@ test("exposes the Lite mode switch in General settings with localized labels", (
 
 test("documents the corrected Lite-mode semantics in every locale", async () => {
   const expectations = [
-    { file: "en.ts", required: ["device-wide", "every tab", "5 minutes", "does not close it"], stale: "hide the page" },
-    { file: "zh-CN.ts", required: ["按设备生效", "所有标签页", "5 分钟", "不会立即关闭"], stale: "页面隐藏" },
-    { file: "zh-TW.ts", required: ["依裝置生效", "所有分頁", "5 分鐘", "不會立即關閉"], stale: "頁面隱藏" },
+    { file: "en.ts", required: ["device-wide", "every tab", "does not close it"], stale: "hide the page" },
+    { file: "zh-CN.ts", required: ["按设备生效", "所有标签页", "不会立即关闭"], stale: "页面隐藏" },
+    { file: "zh-TW.ts", required: ["依裝置生效", "所有分頁", "不會立即關閉"], stale: "頁面隱藏" },
   ];
   for (const { file, required, stale } of expectations) {
     const source = await readFile(new URL(`../lib/i18n/messages/${file}`, import.meta.url), "utf8");
@@ -167,6 +167,21 @@ test("documents the corrected Lite-mode semantics in every locale", async () => 
     }
     assert.equal(message.includes(stale), false, `${file} description must not keep the stale "${stale}" wording`);
   }
+});
+
+test("renders the memory target and idle-minutes controls only while Lite mode is on", () => {
+  assert.match(panelSource, /const \[idleMinutes, setIdleMinutes\] = useLiteIdleMinutes\(\)/);
+  const section = panelSource.slice(
+    panelSource.indexOf('t("settings.sessionLifetime")'),
+    panelSource.indexOf('t("settings.pushPermission")'),
+  );
+  // Both controls live behind the Lite switch: with Lite off there is no
+  // target, no readout, and no idle-minutes field to configure.
+  assert.match(section, /\{liteModeEnabled && \([\s\S]*?<MemoryTargetControl \/>/);
+  assert.match(section, /type="number"/);
+  assert.match(section, /min=\{MIN_LITE_IDLE_MINUTES\}/);
+  assert.match(section, /max=\{MAX_LITE_IDLE_MINUTES\}/);
+  assert.match(section, /htmlFor="settings-lite-idle-minutes"/);
 });
 
 test("keeps password authentication to one login field and one settings action", () => {

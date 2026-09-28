@@ -586,8 +586,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { fontSize } = useChatAppearance();
   const isMobile = useIsMobile();
   const [liteModeEnabled] = useLiteMode();
-  // Lite mode is the only mode that acts on memory pressure, so it owns the
-  // poll. Normal mode never reads it and keeps its existing behaviour.
+  // Lite mode is the only mode that acts on memory pressure, so it is the only
+  // mode that reads the shared status store. The store owns the one 10 s poll
+  // loop for every subscriber; normal mode never reads it.
   const { status: memoryStatus } = useMemoryStatus({ enabled: liteModeEnabled, poll: true });
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
@@ -1642,7 +1643,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             })}
           />
         )}
-        {memoryStatus && memoryStatus.state !== "ok" && (
+        {memoryStatus?.active && memoryStatus.state !== "ok" && (
           <ModelNoticeBanner
             tone="warning"
             title={t(memoryStatus.state === "over" ? "chat.memoryOverTargetTitle" : "chat.memoryNearTargetTitle")}

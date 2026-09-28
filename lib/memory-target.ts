@@ -6,11 +6,13 @@
 export const MEMORY_BYTES_PER_MIB = 1024 * 1024;
 
 /**
- * Default target, in MiB. The service runs with a systemd soft limit
- * (MemoryHigh) of 1500M and a hard limit (MemoryMax) of 2200M, so 1500 MiB
- * puts the target on the soft limit operators already tuned.
+ * Default target, in MiB. A starting point for a fresh install: high enough that
+ * an ordinary working set does not trip it, low enough to be worth reclaiming
+ * before the host's own limits engage. Operators tune it from Settings; on a
+ * systemd host it should sit under the unit's MemoryHigh, which stays the real
+ * limit regardless of this value.
  */
-export const DEFAULT_MEMORY_TARGET_MIB = 1500;
+export const DEFAULT_MEMORY_TARGET_MIB = 1800;
 export const MIN_MEMORY_TARGET_MIB = 256;
 export const MAX_MEMORY_TARGET_MIB = 16384;
 

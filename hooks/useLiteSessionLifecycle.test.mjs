@@ -14,13 +14,25 @@ test("presence is held per tab and released through the presence endpoint", () =
   assert.match(source, /controller\.release\(sid, \{ immediate: true \}\)/);
 });
 
-test("renews on an interval and follows the pure five-minute rule", () => {
+test("renews on an interval and follows the pure configured-window rule", () => {
   assert.match(source, /LITE_PRESENCE_RENEW_INTERVAL_MS = 30_000/);
   assert.match(source, /setInterval\(\(\) => controller\.renew\(sid\), LITE_PRESENCE_RENEW_INTERVAL_MS\)/);
   assert.match(source, /shouldHoldLitePresence\(\{/);
-  assert.match(source, /liteIdleDeadlineIn\(lastInteractionAt, Date\.now\(\)\)/);
+  assert.match(source, /liteIdleDeadlineIn\(lastInteractionAt, Date\.now\(\), idleTimeoutMsRef\.current\)/);
   assert.match(source, /for \(const event of LITE_INTERACTION_EVENTS\) \{/);
   assert.match(source, /document\.addEventListener\("visibilitychange", onVisibility\)/);
+});
+
+test("reads the device-local idle minutes live and re-arms the deadline on change", () => {
+  assert.match(source, /const \[idleMinutes\] = useLiteIdleMinutes\(\)/);
+  assert.match(source, /idleTimeoutMsRef\.current = liteIdleMinutesToMs\(idleMinutes\)/);
+  assert.match(source, /idleTimeoutMs: idleTimeoutMsRef\.current/);
+  // The re-arm path only reschedules and re-evaluates; it never releases or
+  // re-acquires, so changing the preference does not drop a live hold.
+  assert.match(source, /rearmRef\.current = \(\) => \{\s*scheduleIdle\(\);\s*evaluate\(\);\s*\}/);
+  assert.match(source, /useEffect\(\(\) => \{\s*rearmRef\.current\?\.\(\);\s*\}, \[idleMinutes\]\)/);
+  const rearmEffect = source.slice(source.lastIndexOf("useEffect("));
+  assert.doesNotMatch(rearmEffect, /controller\.(hold|release)/);
 });
 
 test("a hidden page keeps holding: the verdict takes no visibility input", () => {

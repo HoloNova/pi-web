@@ -92,8 +92,22 @@ export interface MemoryReclaimResponse {
   viewed: number;
 }
 
-/** GET/PUT /api/memory — the service memory target and the current footprint. */
-export interface MemoryStatusResponse {
+/**
+ * GET /api/memory — the service memory target and the current footprint.
+ *
+ * The target is a Lite-mode-only concept: without the Lite request header the
+ * route reports the inactive shape and there is no target, state, or usage to
+ * speak of. `active` discriminates the two responses so a consumer cannot read
+ * a number that normal mode never reports.
+ */
+export type MemoryStatusResponse = MemoryStatusActiveResponse | MemoryStatusInactiveResponse;
+
+export interface MemoryStatusInactiveResponse {
+  active: false;
+}
+
+export interface MemoryStatusActiveResponse {
+  active: true;
   targetMiB: number;
   defaultMiB: number;
   minMiB: number;

@@ -1139,7 +1139,8 @@
   gap: 8px;
 }
 
-.settings-memory-target input[type="number"] {
+.settings-memory-target input[type="number"],
+.settings-idle-minutes input[type="number"] {
   width: 88px;
   padding: 4px 8px;
   border: 1px solid var(--border);
@@ -1149,6 +1150,14 @@
   font-family: var(--font-mono);
   font-size: 12px;
   text-align: right;
+}
+
+.settings-idle-minutes input[type="number"] {
+  width: 64px;
+}
+
+.settings-idle-minutes > label {
+  flex: 1;
 }
 
 .settings-memory-readout {

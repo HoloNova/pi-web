@@ -26,6 +26,7 @@ const { GET, PUT } = await jiti.import(join(process.cwd(), "app/api/memory/route
 const { AgentSessionWrapper, reclaimIdleRpcSession } = await jiti.import(join(process.cwd(), "lib/rpc-manager.ts"));
 const { acquireSessionPresence, releaseSessionPresence } = await jiti.import(join(process.cwd(), "lib/session-liveness.ts"));
 const { MEMORY_TARGET_FILE_NAME } = await jiti.import(join(process.cwd(), "lib/memory-target-settings.ts"));
+const { DEFAULT_MEMORY_TARGET_MIB } = await jiti.import(join(process.cwd(), "lib/memory-target.ts"));
 
 const LITE_HEADER = { "x-pi-web-lite": "1" };
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
@@ -73,7 +74,7 @@ function getRequest() {
   return new Request("http://localhost/api/memory");
 }
 
-test("a normal-mode read reports usage and never reclaims", async (t) => {
+test("a normal-mode read reports the inactive shape and never reclaims", async (t) => {
   const wrapper = new AgentSessionWrapper(makeInner("memory-route-normal"));
   wrapper.start();
   registerWrapper(t, wrapper);
@@ -81,14 +82,8 @@ test("a normal-mode read reports usage and never reclaims", async (t) => {
   const response = await GET(getRequest());
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.targetMiB, 1500);
-  assert.equal(body.defaultMiB, 1500);
-  assert.equal(body.usedBytes, 3000000000);
-  assert.equal(body.state, "over");
-  assert.equal(body.source, "cgroup");
-  assert.equal(body.approximate, false);
-  assert.equal(body.detail, cgroupFile);
-  assert.equal(body.reclaim, null);
+  // The target is a Lite-mode-only concept: normal mode gets no numbers at all.
+  assert.deepEqual(body, { active: false });
 
   await nextTurn();
   assert.equal(wrapper.isAlive(), true);
@@ -105,6 +100,7 @@ test("a Lite read over target reclaims the oldest idle session first", async (t)
   registerWrapper(t, newer);
 
   const body = await (await GET(liteRequest())).json();
+  assert.equal(body.active, true);
   assert.equal(body.state, "over");
   assert.equal(body.reclaim.reclaimable, 2);
   assert.deepEqual(body.reclaim.reclaimed, ["memory-route-older", "memory-route-newer"]);
@@ -134,6 +130,7 @@ test("over target with nothing reclaimable reports over target and closes nothin
   t.after(() => releaseSessionPresence("memory-route-viewed", "tab-a"));
 
   const body = await (await GET(liteRequest())).json();
+  assert.equal(body.active, true);
   assert.equal(body.state, "over");
   assert.deepEqual(body.reclaim.reclaimed, []);
   assert.equal(body.reclaim.reclaimable, 0);
@@ -145,18 +142,33 @@ test("over target with nothing reclaimable reports over target and closes nothin
   assert.equal(viewed.isAlive(), true);
 });
 
-test("PUT validates and persists the service-wide target", async () => {
-  const put = (body, headers = { "Content-Type": "application/json" }) => PUT(new Request("http://localhost/api/memory", {
+test("a Lite read reports the active shape with the stored target", async () => {
+  const body = await (await GET(liteRequest())).json();
+  assert.equal(body.active, true);
+  assert.equal(body.targetMiB, DEFAULT_MEMORY_TARGET_MIB);
+  assert.equal(body.defaultMiB, DEFAULT_MEMORY_TARGET_MIB);
+  assert.equal(body.source, "cgroup");
+  assert.equal(body.approximate, false);
+  assert.equal(body.detail, cgroupFile);
+});
+
+test("PUT is refused without the Lite header and persists with it", async () => {
+  const put = (body, headers = { "Content-Type": "application/json", ...LITE_HEADER }) => PUT(new Request("http://localhost/api/memory", {
     method: "PUT",
     headers: { host: "localhost", ...headers },
     body: typeof body === "string" ? body : JSON.stringify(body),
   }));
 
+  // Normal mode has no target, so the write is refused before anything else.
+  const refused = await put({ targetMiB: 2048 }, { "Content-Type": "application/json" });
+  assert.equal(refused.status, 409);
+  assert.match((await refused.json()).error, /Lite/i);
+
   for (const invalid of [{ targetMiB: 0 }, { targetMiB: 1500.5 }, { targetMiB: "1500" }, { targetMiB: 99_999 }, {}]) {
     const response = await put(invalid);
     assert.equal(response.status, 400, JSON.stringify(invalid));
   }
-  assert.equal((await put({ targetMiB: 2048 }, {})).status, 415);
+  assert.equal((await put({ targetMiB: 2048 }, LITE_HEADER)).status, 415);
   assert.equal((await put("not json")).status, 500);
 
   const saved = await put({ targetMiB: 2048 });
@@ -170,6 +182,7 @@ test("PUT validates and persists the service-wide target", async () => {
   assert.equal(stored.targetMiB, 2048);
   assert.equal(stored.version, 1);
 
-  const status = await (await GET(getRequest())).json();
+  const status = await (await GET(liteRequest())).json();
+  assert.equal(status.active, true);
   assert.equal(status.targetMiB, 2048);
 });
