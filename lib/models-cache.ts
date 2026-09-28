@@ -54,39 +54,55 @@ export function withSafeModelLoadFailure(data: ModelsData): ModelsData {
   return { ...data, modelError: SAFE_MODEL_LOAD_FAILURE_MESSAGE };
 }
 
-export function loadModelsWithCache(cwd: string, loader: () => Promise<ModelsData>): Promise<ModelsData> {
+/**
+ * Cache key for `/api/models`.
+ *
+ * Lite and normal loads see different catalogs — Lite has no
+ * extension-registered providers — so they must never share an entry. Without
+ * the split, switching Lite off could keep serving the Lite list for a full
+ * TTL, and a Lite tab could briefly see extension providers.
+ */
+export function modelsCacheKey(cwd: string, lite: boolean): string {
+  return lite ? `lite\u0000${cwd}` : cwd;
+}
+
+/**
+ * `key` identifies the loader's catalog, not just the directory: callers whose
+ * loader varies must vary the key too (see `modelsCacheKey()`).
+ */
+export function loadModelsWithCache(key: string, loader: () => Promise<ModelsData>): Promise<ModelsData> {
   const state = getModelsCacheState();
-  const cached = state.entries.get(cwd);
+  const cached = state.entries.get(key);
   if (cached) {
     if (cached.expiresAt > Date.now()) return Promise.resolve(cached.data);
-    state.entries.delete(cwd);
+    state.entries.delete(key);
   }
 
-  const existingLoad = state.inFlight.get(cwd);
+  const existingLoad = state.inFlight.get(key);
   if (existingLoad) return existingLoad;
 
   const generation = state.generation;
   const loadPromise: Promise<ModelsData> = Promise.resolve()
     .then(loader)
     .then((data) => {
-      if (state.generation === generation && state.inFlight.get(cwd) === loadPromise) {
+      if (state.generation === generation && state.inFlight.get(key) === loadPromise) {
         const now = Date.now();
-        for (const [key, entry] of state.entries) {
-          if (entry.expiresAt <= now) state.entries.delete(key);
+        for (const [entryKey, entry] of state.entries) {
+          if (entry.expiresAt <= now) state.entries.delete(entryKey);
         }
         while (state.entries.size >= MAX_MODELS_CACHE_ENTRIES) {
           const oldestKey = state.entries.keys().next().value;
           if (oldestKey === undefined) break;
           state.entries.delete(oldestKey);
         }
-        state.entries.set(cwd, { data, expiresAt: now + MODELS_CACHE_TTL_MS });
+        state.entries.set(key, { data, expiresAt: now + MODELS_CACHE_TTL_MS });
       }
       return data;
     })
     .finally(() => {
-      if (state.inFlight.get(cwd) === loadPromise) state.inFlight.delete(cwd);
+      if (state.inFlight.get(key) === loadPromise) state.inFlight.delete(key);
     });
 
-  state.inFlight.set(cwd, loadPromise);
+  state.inFlight.set(key, loadPromise);
   return loadPromise;
 }

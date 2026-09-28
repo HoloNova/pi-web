@@ -1,7 +1,8 @@
+import { join } from "path";
 import {
   createAgentSessionServices,
   getAgentDir,
-  type ModelRuntime,
+  ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -19,4 +20,29 @@ export async function createModelRuntimeWithExtensions(): Promise<ModelRuntime> 
   const agentDir = getAgentDir();
   const services = await createAgentSessionServices({ cwd: agentDir, agentDir });
   return services.modelRuntime;
+}
+
+/**
+ * ModelRuntime with pi's built-in providers plus `~/.pi/agent/models.json`, and
+ * nothing else.
+ *
+ * Lite mode's settings reads use this so they never import the configured
+ * extensions; loading them was the whole cost of listing providers (an
+ * extension such as AFT spawns a helper process per load, and three provider
+ * reads meant three processes). The paths match what
+ * `createAgentSessionServices()` builds, minus the resource loader, so auth
+ * status and login read the same credential store.
+ *
+ * The trade: a provider an extension registers at runtime is invisible here.
+ * This runtime must therefore never decide what to *write* — every
+ * `enabledModels` edit resolves against the full runtime, which is also what
+ * keeps a plugin-registered model from being dropped out of the scope. See
+ * `app/api/models/enabled/route.ts`.
+ */
+export async function createLiteModelRuntime(): Promise<ModelRuntime> {
+  const agentDir = getAgentDir();
+  return ModelRuntime.create({
+    authPath: join(agentDir, "auth.json"),
+    modelsPath: join(agentDir, "models.json"),
+  });
 }

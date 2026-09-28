@@ -137,6 +137,38 @@ test("uses the compact controls glyph for General", () => {
   assert.match(panelSource, /section === "general"[\s\S]*?<path d="M20 7h-9M14 17H5" \/>[\s\S]*?<circle cx="7" cy="7" r="3" \/>[\s\S]*?<circle cx="17" cy="17" r="3" \/>/);
 });
 
+test("exposes the Lite mode switch in General settings with localized labels", () => {
+  assert.match(panelSource, /import \{ useLiteMode \} from "@\/hooks\/useLiteMode"/);
+  assert.match(panelSource, /const \[liteModeEnabled, setLiteModeEnabled\] = useLiteMode\(\)/);
+  assert.match(panelSource, /t\("settings\.sessionLifetime"\)/);
+  assert.match(panelSource, /checked=\{liteModeEnabled\}/);
+  assert.match(panelSource, /label=\{t\("settings\.liteMode"\)\}/);
+  assert.match(panelSource, /onChange=\{setLiteModeEnabled\}/);
+  assert.match(panelSource, /t\("settings\.liteModeDescription"\)/);
+  for (const localized of [enSource, zhSource]) {
+    assert.match(localized, /"settings\.liteMode":/);
+    assert.match(localized, /"settings\.sessionLifetime":/);
+    assert.match(localized, /"settings\.liteModeDescription":/);
+  }
+});
+
+test("documents the corrected Lite-mode semantics in every locale", async () => {
+  const expectations = [
+    { file: "en.ts", required: ["device-wide", "every tab", "5 minutes", "does not close it"], stale: "hide the page" },
+    { file: "zh-CN.ts", required: ["按设备生效", "所有标签页", "5 分钟", "不会立即关闭"], stale: "页面隐藏" },
+    { file: "zh-TW.ts", required: ["依裝置生效", "所有分頁", "5 分鐘", "不會立即關閉"], stale: "頁面隱藏" },
+  ];
+  for (const { file, required, stale } of expectations) {
+    const source = await readFile(new URL(`../lib/i18n/messages/${file}`, import.meta.url), "utf8");
+    const message = source.match(/"settings\.liteModeDescription": "([^"]*)"/)?.[1];
+    assert.ok(message, `${file} must carry settings.liteModeDescription`);
+    for (const fragment of required) {
+      assert.ok(message.includes(fragment), `${file} description must mention "${fragment}"`);
+    }
+    assert.equal(message.includes(stale), false, `${file} description must not keep the stale "${stale}" wording`);
+  }
+});
+
 test("keeps password authentication to one login field and one settings action", () => {
   assert.equal((loginSource.match(/type="password"/g) ?? []).length, 1);
   assert.doesNotMatch(loginSource, /type="(?:text|email)"/);

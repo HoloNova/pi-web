@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteMode } from "@/hooks/useLiteMode";
 import { useTheme } from "@/hooks/useTheme";
 import { THEME_OPTIONS } from "@/lib/theme";
 import { ThemeIcon } from "./ThemeIcon";
@@ -29,6 +30,7 @@ import { setupPushSubscription } from "@/lib/push-client";
 import { SkillsConfig } from "./SkillsConfig";
 import { AgentsConfig } from "./AgentsConfig";
 import { PluginsConfig } from "./PluginsConfig";
+import { MemoryTargetControl } from "./MemoryTargetControl";
 import { ConfigButton, ConfigSwitch } from "./SettingsUi";
 
 interface Props {
@@ -66,6 +68,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
+  const [liteModeEnabled, setLiteModeEnabled] = useLiteMode();
   const [shellSettings, setShellSettings] = useState<ShellToolSettingsResponse | null>(null);
   const [shellSaving, setShellSaving] = useState(false);
   const [shellError, setShellError] = useState<string | null>(null);
@@ -284,6 +287,21 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           {shellError && <p role="alert" className="settings-general-error">{shellError}</p>}
         </section>
       )}
+
+      <section className="settings-general-section">
+        <h3 className="settings-general-heading">{t("settings.sessionLifetime")}</h3>
+        <p className="settings-general-description">{t("settings.sessionLifetimeDescription")}</p>
+        <div className="settings-chat-option settings-chat-switch-option">
+          <span>{t("settings.liteMode")}</span>
+          <ConfigSwitch
+            checked={liteModeEnabled}
+            label={t("settings.liteMode")}
+            onChange={setLiteModeEnabled}
+          />
+        </div>
+        <p className="settings-general-description">{t("settings.liteModeDescription")}</p>
+        <MemoryTargetControl />
+      </section>
 
       <section className="settings-general-section">
         <h3 className="settings-general-heading">{t("settings.pushPermission")}</h3>

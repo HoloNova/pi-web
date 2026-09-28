@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
+import { acquireSessionPresence } from "@/lib/session-liveness";
+
+// Read-only commands the UI polls with. They must not refresh a client's
+// presence: polling/heartbeats are not user interaction, so a Lite page that
+// has gone quiet still releases its idle session.
+const NON_INTERACTIVE_COMMAND_TYPES = new Set([
+  "get_state",
+  "get_tools",
+  "get_commands",
+  "get_session_stats",
+  "get_last_assistant_text",
+]);
 
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
@@ -23,6 +35,16 @@ export async function POST(
     }
     const toolNames = requestedToolNames as string[] | undefined;
 
+    // A real command from a Lite tab is a liveness claim: refresh its presence
+    // before touching the wrapper so a concurrent reclaim cannot tear down a
+    // session the tab is starting to use again. Normal-mode clients never send
+    // the Lite flag, so they never create server-side presence.
+    const clientId = req.headers.get("x-pi-web-client")?.trim();
+    const liteClient = req.headers.get("x-pi-web-lite") === "1";
+    if (liteClient && clientId && commandType && !NON_INTERACTIVE_COMMAND_TYPES.has(commandType)) {
+      acquireSessionPresence(id, clientId);
+    }
+
     // Fast path: already-running session
     const existing = getRpcSession(id);
     if (body.type === "set_tools") {
@@ -36,7 +58,7 @@ export async function POST(
         data: { sessionId: changed.sessionId, recreated: changed.recreated },
       });
     }
-    if (existing?.isAlive()) {
+    if (existing?.isAlive() && !existing.isClosing()) {
       const result = await existing.send(body);
       promptAccepted = body.type === "prompt";
       return NextResponse.json({ success: true, data: result });
@@ -78,7 +100,7 @@ export async function GET(
 
   try {
     const session = getRpcSession(id);
-    if (!session || !session.isAlive()) {
+    if (!session || !session.isAlive() || session.isClosing()) {
       return NextResponse.json({ running: false });
     }
 

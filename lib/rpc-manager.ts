@@ -16,7 +16,8 @@ import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, rea
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { notifySessionComplete } from "./web-push";
-import { hasActiveSessionLivenessProvider } from "./session-liveness";
+import { hasActiveSessionLivenessProvider, onSessionPresenceReleased } from "./session-liveness";
+import { runIdleReclaimPass, type ReclaimCandidate, type ReclaimPassResult } from "./lite-memory-reclaim";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
@@ -249,6 +250,10 @@ export class AgentSessionWrapper {
   private shutdownPromise: Promise<void> | null = null;
   private sessionShutdownEmitted = false;
   private forceShutdownOnIdle = false;
+  private idleReclaimRequested = false;
+  /** Epoch ms of the last real activity; the LRU key for pressure reclaim. */
+  private lastActivityAtMs = Date.now();
+  private closing = false;
   private _alive = true;
 
   constructor(
@@ -285,8 +290,51 @@ export class AgentSessionWrapper {
     return this._alive;
   }
 
+  /**
+   * True once an idle reclaim or explicit shutdown has started. Callers that
+   * would reuse the wrapper (startRpcSession, the agent route) must treat a
+   * closing wrapper as absent, or a page that wakes just as its session is
+   * being reclaimed would send into a wrapper that is already disposing.
+   */
+  isClosing(): boolean {
+    return this.closing || !this._alive;
+  }
+
+  /**
+   * Reclaim this wrapper once it is safe: no running task and no other active
+   * viewer. A running task is never interrupted — the reclaim is retried when
+   * the run settles (see attemptIdleReclaim call sites).
+   */
+  requestIdleReclaim(): void {
+    if (!this._alive || this.closing) return;
+    this.idleReclaimRequested = true;
+    this.attemptIdleReclaim();
+  }
+
+  private attemptIdleReclaim(): void {
+    if (!this._alive || this.closing || !this.idleReclaimRequested) return;
+    if (this.isRunning()) return;
+    if (hasActiveSessionLivenessProvider({
+      sessionId: this.sessionId,
+      sessionFile: this.sessionFile || undefined,
+    })) return;
+    this.idleReclaimRequested = false;
+    void this.shutdown().catch((error) => {
+      console.error("[pi-web] failed to reclaim idle session:", error instanceof Error ? error.message : error);
+    });
+  }
+
   isRunning(): boolean {
     return this._alive && (this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning);
+  }
+
+  /**
+   * Epoch ms of the last real activity (a command, prompt or run event that
+   * restarts the idle timer). Lite mode's pressure reclaim uses this as its LRU
+   * key so the oldest idle wrapper is chosen first.
+   */
+  lastActivityAt(): number {
+    return this.lastActivityAtMs;
   }
 
   /**
@@ -328,7 +376,10 @@ export class AgentSessionWrapper {
       }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
       this.emit(event);
-      if (event.type === "agent_settled") this.notifyAgentRunCompleteIfIdle();
+      if (event.type === "agent_settled") {
+        this.notifyAgentRunCompleteIfIdle();
+        this.attemptIdleReclaim();
+      }
     });
     this.resetIdleTimer();
   }
@@ -458,6 +509,7 @@ export class AgentSessionWrapper {
   }
 
   private resetIdleTimer(): void {
+    this.lastActivityAtMs = Date.now();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (!this._alive) return;
     // A resolved timeout of 0 disables idle shutdown entirely.
@@ -607,6 +659,7 @@ export class AgentSessionWrapper {
             this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
             this.resetIdleTimer();
             this.notifyAgentRunCompleteIfIdle();
+            this.attemptIdleReclaim();
           };
 
           this.pendingPromptCount += 1;
@@ -668,7 +721,10 @@ export class AgentSessionWrapper {
           await this.withFinalIdleReset(() => this.inner.abort());
           return null;
         } finally {
-          if (!this.isRunning()) this.forceShutdownOnIdle = false;
+          if (!this.isRunning()) {
+            this.forceShutdownOnIdle = false;
+            this.attemptIdleReclaim();
+          }
         }
 
       case "get_state": {
@@ -844,6 +900,7 @@ export class AgentSessionWrapper {
           );
         } finally {
           invalidateSessionListCache();
+          this.attemptIdleReclaim();
         }
       }
 
@@ -992,6 +1049,7 @@ export class AgentSessionWrapper {
         } finally {
           this.resetIdleTimer();
           invalidateSessionListCache();
+          this.attemptIdleReclaim();
         }
       }
 
@@ -1064,6 +1122,7 @@ export class AgentSessionWrapper {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     if (!this._alive) return;
+    this.closing = true;
 
     this.shutdownPromise = (async () => {
       try {
@@ -1670,15 +1729,78 @@ function getRegistry(): Map<string, AgentSessionWrapper> {
     process.once("exit", destroy);
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+    // A page that stops holding a session (Lite mode releases presence on a
+    // conversation switch, a page close, or five minutes without real
+    // interaction) asks for a prompt reclaim here instead of waiting out the
+    // idle timer. Lease expiry uses the same path for a page that vanished
+    // without releasing.
+    onSessionPresenceReleased((sessionId) => reclaimIdleRpcSession(sessionId));
   }
   return globalThis.__piSessions;
+}
+
+/**
+ * Close an idle wrapper that no page is viewing any more. Running tasks are
+ * never interrupted: the reclaim is deferred until they settle. Returns true
+ * when a shutdown was started immediately.
+ */
+export function reclaimIdleRpcSession(sessionId: string): boolean {
+  const wrapper = getRegistry().get(sessionId);
+  if (!wrapper || !wrapper.isAlive() || wrapper.isClosing()) return false;
+  const idle = !wrapper.isRunning() && !hasActiveSessionLivenessProvider({
+    sessionId: wrapper.sessionId,
+    sessionFile: wrapper.sessionFile || undefined,
+  });
+  wrapper.requestIdleReclaim();
+  return idle;
+}
+
+/**
+ * Live wrappers described for the pressure pass: identity, LRU key, and whether
+ * a run is in flight or another viewer holds them right now.
+ */
+export function collectMemoryReclaimCandidates(): ReclaimCandidate[] {
+  const candidates: ReclaimCandidate[] = [];
+  for (const [registryId, wrapper] of getRegistry()) {
+    if (typeof wrapper.isAlive !== "function" || !wrapper.isAlive() || wrapper.isClosing()) continue;
+    candidates.push({
+      sessionId: wrapper.sessionId || registryId,
+      lastActivityAt: wrapper.lastActivityAt(),
+      running: wrapper.isRunning(),
+      viewed: hasActiveSessionLivenessProvider({
+        sessionId: wrapper.sessionId,
+        sessionFile: wrapper.sessionFile || undefined,
+      }),
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Lite mode's memory-pressure policy: reclaim the oldest idle wrappers first
+ * through the milestone-1 reclaim path. Running tasks are never interrupted (a
+ * running, unviewed wrapper is retried once its run settles) and a session
+ * another tab/device is viewing is never closed. Processes are never killed and
+ * systemd is never touched; when nothing can be reclaimed the caller reports
+ * the over-target state instead of escalating.
+ */
+export function runMemoryPressureReclaim(): ReclaimPassResult {
+  return runIdleReclaimPass(collectMemoryReclaimCandidates(), {
+    reclaim: (sessionId) => reclaimIdleRpcSession(sessionId),
+    defer: (sessionId) => getRegistry().get(sessionId)?.requestIdleReclaim(),
+  });
 }
 
 function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
   const registry = getRegistry();
   const sessionId = wrapper.sessionId;
   if (wrapper.sessionFile) cacheSessionPath(sessionId, wrapper.sessionFile);
-  wrapper.onDestroy(() => registry.delete(sessionId));
+  // Only drop the registration if this exact wrapper is still the current one:
+  // a wrapper reclaimed while another request started a replacement must not
+  // delete its successor.
+  wrapper.onDestroy(() => {
+    if (registry.get(sessionId) === wrapper) registry.delete(sessionId);
+  });
   registry.set(sessionId, wrapper);
   wrapper.start();
   if (!wrapper.isChatOnly()) wrapper.beginExtensionBinding();
@@ -1961,7 +2083,7 @@ export async function startRpcSession(
   const locks = getLocks();
 
   const existing = registry.get(sessionId);
-  if (existing?.isAlive()) return { session: existing, realSessionId: sessionId };
+  if (existing?.isAlive() && !existing.isClosing()) return { session: existing, realSessionId: sessionId };
 
   const inflight = locks.get(sessionId);
   if (inflight) return inflight;

@@ -85,6 +85,38 @@ export interface PushConfigResponse {
   publicKey: string;
 }
 
+export interface MemoryReclaimResponse {
+  reclaimed: string[];
+  reclaimable: number;
+  running: number;
+  viewed: number;
+}
+
+/** GET/PUT /api/memory — the service memory target and the current footprint. */
+export interface MemoryStatusResponse {
+  targetMiB: number;
+  defaultMiB: number;
+  minMiB: number;
+  maxMiB: number;
+  nearRatio: number;
+  usedBytes: number;
+  usedMiB: number;
+  state: "ok" | "near" | "over";
+  source: "cgroup" | "process-rss";
+  approximate: boolean;
+  detail: string;
+  /** Present only for a Lite request under pressure; null means no pass ran. */
+  reclaim: MemoryReclaimResponse | null;
+}
+
+export interface MemoryTargetResponse {
+  targetMiB: number;
+  defaultMiB: number;
+  minMiB: number;
+  maxMiB: number;
+  nearRatio: number;
+}
+
 export type PluginScope = "global" | "project";
 export type PluginResourceKind = "extension" | "skill" | "prompt" | "theme";
 
