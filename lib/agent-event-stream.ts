@@ -52,6 +52,7 @@ export function createAgentEventStream(
   req: Request,
   sessionId: string,
   sessionPromise: Promise<AgentEventStreamSession>,
+  clientId = "",
 ): ReadableStream<Uint8Array> {
   let cancelStream: (closeController: boolean | "error") => void = () => {};
   let releaseLease: () => void = () => {};
@@ -87,7 +88,9 @@ export function createAgentEventStream(
         }
       };
       cancelStream = cleanup;
-      releaseLease = acquireSessionLivenessLease(sessionId).release;
+      // The lease belongs to the page that opened the stream, so releasing one
+      // tab's presence never drops another tab's connection to the same session.
+      releaseLease = acquireSessionLivenessLease(sessionId, clientId ? { clientId } : {}).release;
       activeStreamClosers.add(cleanup);
 
       const enqueueText = (text: string) => {

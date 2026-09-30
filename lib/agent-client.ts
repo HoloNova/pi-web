@@ -7,6 +7,8 @@
 // Call sites previously repeated the same 5-line fetch block 13× in
 // hooks/useAgentSession.ts. This helper collapses that down to one line.
 
+import { getClientId } from "./client-identity";
+
 export class AgentCommandError extends Error {
   constructor(
     message: string,
@@ -29,9 +31,16 @@ export async function sendAgentCommand<T = unknown>(
   sessionId: string,
   command: Record<string, unknown>,
 ): Promise<T> {
+  // The page identity lets the server treat a real command as a liveness claim
+  // from this page, so a concurrent reclaim cannot tear down a session it is
+  // starting to use again. Absent off the browser.
+  const clientId = getClientId();
   const res = await fetch(`/api/agent/${encodeURIComponent(sessionId)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(clientId ? { "x-pi-web-client": clientId } : {}),
+    },
     body: JSON.stringify(command),
   });
   const body = (await res.json().catch(() => ({}))) as {

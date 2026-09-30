@@ -15,7 +15,7 @@ import {
 import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
-import { hasActiveSessionLivenessProvider } from "./session-liveness";
+import { hasActiveSessionLivenessProvider, onSessionPresenceReleased } from "./session-liveness";
 import { hasDelegatedWorkRunning } from "./delegated-work";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
@@ -249,6 +249,9 @@ export class AgentSessionWrapper {
   private shutdownPromise: Promise<void> | null = null;
   private sessionShutdownEmitted = false;
   private forceShutdownOnIdle = false;
+  /** Epoch ms of the last real activity; the LRU key for a memory reclaim. */
+  private lastActivityAtMs = Date.now();
+  private closing = false;
   private _alive = true;
 
   constructor(
@@ -283,6 +286,16 @@ export class AgentSessionWrapper {
 
   isAlive(): boolean {
     return this._alive;
+  }
+
+  /**
+   * True once an idle reclaim or explicit shutdown has started. Callers that
+   * would reuse the wrapper (startRpcSession, the agent routes) must treat a
+   * closing wrapper as absent, or a page that wakes just as its session is
+   * being reclaimed would send into a wrapper that is already disposing.
+   */
+  isClosing(): boolean {
+    return this.closing || !this._alive;
   }
 
   isRunning(): boolean {
@@ -346,11 +359,11 @@ export class AgentSessionWrapper {
           this.activeToolEvents.delete(toolCallId);
         }
       }
-      if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
+      if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.markActivity();
       this.emit(event);
       if (event.type === "agent_settled") this.notifyAgentRunCompleteIfIdle();
     });
-    this.resetIdleTimer();
+    this.armIdleTimer();
   }
 
   private notifyAgentRunCompleteIfIdle(): void {
@@ -446,7 +459,7 @@ export class AgentSessionWrapper {
     try {
       return await operation();
     } finally {
-      this.resetIdleTimer();
+      this.markActivity();
     }
   }
 
@@ -477,7 +490,20 @@ export class AgentSessionWrapper {
     return release;
   }
 
-  private resetIdleTimer(): void {
+  /**
+   * Record real activity — a user command, a prompt, or a meaningful agent
+   * event — and give the session a fresh idle window. Timer maintenance after a
+   * settle, or a liveness re-check, must call armIdleTimer() instead: the LRU
+   * timestamp has to mean "when this session last really did something", which
+   * is what an idle reclaim orders sessions by.
+   */
+  private markActivity(): void {
+    this.lastActivityAtMs = Date.now();
+    this.armIdleTimer();
+  }
+
+  /** (Re)start the idle window. Timer bookkeeping only — never the LRU key. */
+  private armIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (!this._alive) return;
     // A resolved timeout of 0 disables idle shutdown entirely.
@@ -495,7 +521,7 @@ export class AgentSessionWrapper {
           sessionFile: this.sessionFile || undefined,
         })
       )) {
-        this.resetIdleTimer();
+        this.armIdleTimer();
         return;
       }
       void this.shutdown().catch((error) => {
@@ -583,7 +609,7 @@ export class AgentSessionWrapper {
 
     try {
       // Status reconciliation must not postpone forced cleanup after Stop.
-      if (type !== "get_state") this.resetIdleTimer();
+      if (type !== "get_state") this.markActivity();
       if (this.shouldWaitForExtensions(type)) await this.waitForExtensionsBound();
       if (this.sessionReplacement && !allowedDuringReplacement) {
         throw new Error("Session is being copied to a new session");
@@ -632,7 +658,7 @@ export class AgentSessionWrapper {
             if (promptSettled) return;
             promptSettled = true;
             this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
-            this.resetIdleTimer();
+            this.markActivity();
             this.notifyAgentRunCompleteIfIdle();
           };
 
@@ -1017,7 +1043,7 @@ export class AgentSessionWrapper {
           this.persistBashOnlySession();
           return result;
         } finally {
-          this.resetIdleTimer();
+          this.markActivity();
           invalidateSessionListCache();
         }
       }
@@ -1091,6 +1117,7 @@ export class AgentSessionWrapper {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     if (!this._alive) return;
+    this.closing = true;
 
     this.shutdownPromise = (async () => {
       try {
@@ -1697,6 +1724,11 @@ function getRegistry(): Map<string, AgentSessionWrapper> {
     process.once("exit", destroy);
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+    // A page that stops holding a session (Lite mode releases presence on a
+    // conversation switch, a page close, or the configured idle window) asks
+    // for a prompt reclaim here instead of waiting out the idle timer. Lease
+    // expiry uses the same path for a page that vanished without releasing.
+    onSessionPresenceReleased((sessionId) => reclaimIdleRpcSession(sessionId));
   }
   return globalThis.__piSessions;
 }
@@ -1712,11 +1744,36 @@ function wrapperIsBusy(wrapper: AgentSessionWrapper): boolean {
   return wrapper.isRunning();
 }
 
+/**
+ * Close an idle wrapper that no page is viewing any more. A running task — this
+ * wrapper's own turn or delegated work underneath it — is never interrupted:
+ * the reclaim then does nothing and the idle timer closes the session once the
+ * work settles. Returns true when a shutdown was started immediately.
+ */
+export function reclaimIdleRpcSession(sessionId: string): boolean {
+  const wrapper = getRegistry().get(sessionId);
+  if (!wrapper || !wrapper.isAlive() || wrapper.isClosing()) return false;
+  if (wrapperIsBusy(wrapper)) return false;
+  if (hasActiveSessionLivenessProvider({
+    sessionId: wrapper.sessionId,
+    sessionFile: wrapper.sessionFile || undefined,
+  })) return false;
+  void wrapper.shutdown().catch((error) => {
+    console.error("[pi-web] failed to reclaim an idle session:", error instanceof Error ? error.message : error);
+  });
+  return true;
+}
+
 function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
   const registry = getRegistry();
   const sessionId = wrapper.sessionId;
   if (wrapper.sessionFile) cacheSessionPath(sessionId, wrapper.sessionFile);
-  wrapper.onDestroy(() => registry.delete(sessionId));
+  // Only drop the registration if this exact wrapper is still the current one:
+  // a wrapper reclaimed while another request started a replacement must not
+  // delete its successor.
+  wrapper.onDestroy(() => {
+    if (registry.get(sessionId) === wrapper) registry.delete(sessionId);
+  });
   registry.set(sessionId, wrapper);
   wrapper.start();
   if (!wrapper.isChatOnly()) wrapper.beginExtensionBinding();
@@ -1999,7 +2056,7 @@ export async function startRpcSession(
   const locks = getLocks();
 
   const existing = registry.get(sessionId);
-  if (existing?.isAlive()) return { session: existing, realSessionId: sessionId };
+  if (existing?.isAlive() && !existing.isClosing()) return { session: existing, realSessionId: sessionId };
 
   const inflight = locks.get(sessionId);
   if (inflight) return inflight;
