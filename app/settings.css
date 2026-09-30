@@ -239,6 +239,8 @@
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
 /* Memory target: the number and the reading it is judged against. The state
    pill is the only colour, so "near" and "over" stand out from the muted
    readout without turning the whole row into a warning. */
