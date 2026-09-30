@@ -15,9 +15,15 @@ import type { ReclaimPassResult } from "@/lib/lite-memory-reclaim";
  * own, so nothing about memory policy depends on a browser being open. The tick
  * is deliberately cheap in the common case — read the configuration, read
  * `memory.current`, compare the two — and only walks sessions when the reading
- * is near or over the target. Fifteen seconds keeps a reclaim reaction close to
- * the pressure that caused it without turning the policy into a busy loop, and
- * the interval stays a constant rather than another setting to explain.
+ * reaches the near threshold (90% of the target) or the target itself.
+ *
+ * Fifteen seconds keeps a reclaim reaction close to the pressure that caused it
+ * without turning the policy into a busy loop, and the interval stays a constant
+ * rather than another setting to explain.
+ *
+ * Pressure is the *near* threshold, not the target itself: the policy starts
+ * acting at 90% of the target (`MEMORY_NEAR_TARGET_RATIO`), which is what leaves
+ * it room to reclaim before the target is crossed.
  */
 export const MEMORY_MONITOR_INTERVAL_MS = 15_000;
 
@@ -49,10 +55,15 @@ const defaultDeps: MemoryMonitorDeps = {
  * One policy tick.
  *
  * Lite mode off: nothing is measured and nothing is closed — the target only
- * exists in Lite mode. Below the target: measurement only; no session is looked
- * at. At or above it: one reclaim pass, which closes at most the oldest eligible
- * session and may close nothing at all — a service that cannot free anything
- * simply stays over target until the next tick. Nothing is ever killed.
+ * exists in Lite mode.
+ *
+ * Below the near threshold (90% of the target): measurement only; no session is
+ * inspected.
+ *
+ * At or above the near threshold — including a reading that has not reached the
+ * target yet: one reclaim pass, which closes at most the oldest eligible session
+ * and may close nothing at all. A service that cannot free anything stays under
+ * pressure until the next tick. Nothing is ever killed.
  */
 export function runLiteMemoryMonitorTick(deps: MemoryMonitorDeps = defaultDeps): MemoryMonitorTickResult {
   const config = deps.liteConfig();
