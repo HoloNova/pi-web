@@ -26,7 +26,17 @@ import { join } from "node:path";
 export const DEFAULT_DELEGATED_ACTIVITY_WINDOW_MS = 3 * 60 * 1000;
 export const MIN_DELEGATED_ACTIVITY_WINDOW_MS = 10 * 1000;
 export const MAX_DELEGATED_ACTIVITY_WINDOW_MS = 30 * 60 * 1000;
-/** How long one combined answer is reused, so a polling page cannot rescan constantly. */
+/**
+ * How long a BUSY answer is reused, so a polling page cannot rescan constantly.
+ *
+ * Only the busy answer is cached, and the asymmetry is deliberate. A busy that
+ * outlives its cause costs a session a little extra lifetime — it is closed on a
+ * later check. A quiet that outlives its cause is the dangerous direction: a
+ * child that starts right after the scan would be invisible for the rest of the
+ * TTL, and closing the parent then kills a live child. So a quiet answer is
+ * measured again on every call; the scan it costs is bounded (see
+ * `hasRecentArtifactActivity`).
+ */
 export const DELEGATED_WORK_CACHE_TTL_MS = 10 * 1000;
 
 const MAX_SCAN_DEPTH = 3;
@@ -45,10 +55,11 @@ const nodeFs: DelegatedWorkFs = {
 declare global {
   // Shared across module instances (bundler/jiti duplication, tests) the same way
   // the session registry and subagent runs are: every caller must see one cache.
-  var __piDelegatedWorkCache: Map<string, { at: number; busy: boolean }> | undefined;
+  // Values are the timestamps of the last BUSY answer per cache key.
+  var __piDelegatedWorkCache: Map<string, number> | undefined;
 }
 
-function cacheMap(): Map<string, { at: number; busy: boolean }> {
+function cacheMap(): Map<string, number> {
   if (!globalThis.__piDelegatedWorkCache) globalThis.__piDelegatedWorkCache = new Map();
   return globalThis.__piDelegatedWorkCache;
 }
@@ -157,17 +168,24 @@ export function hasDelegatedWorkRunning(input: DelegatedWorkInput): boolean {
   const cacheKey = `${artifactDir ?? ""}\u0000${input.sessionId ?? ""}\u0000${windowMs}`;
   const cache = cacheMap();
   if (input.bypassCache !== true) {
-    const cached = cache.get(cacheKey);
-    if (cached && now - cached.at < DELEGATED_WORK_CACHE_TTL_MS) return cached.busy;
+    // A cached busy stands for the full TTL; a quiet answer is never kept.
+    const answeredAt = cache.get(cacheKey);
+    if (answeredAt !== undefined && now - answeredAt < DELEGATED_WORK_CACHE_TTL_MS) return true;
   }
   const busy = artifactDir
     ? hasRecentArtifactActivity(artifactDir, { now, windowMs, ...(input.fs ? { fs: input.fs } : {}) })
     : false;
-  cache.set(cacheKey, { at: now, busy });
-  if (cache.size > 256) {
-    for (const [key, value] of cache) {
-      if (now - value.at >= DELEGATED_WORK_CACHE_TTL_MS) cache.delete(key);
+  if (busy) {
+    cache.set(cacheKey, now);
+    if (cache.size > 256) {
+      for (const [key, seenAt] of cache) {
+        if (now - seenAt >= DELEGATED_WORK_CACHE_TTL_MS) cache.delete(key);
+      }
     }
+  } else {
+    // The opposite direction must not be cached: a child that starts just after
+    // this scan has to be visible on the very next call (see the TTL note).
+    cache.delete(cacheKey);
   }
   return busy;
 }
