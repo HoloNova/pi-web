@@ -18,9 +18,12 @@ function visit(node) {
 visit(source);
 const loader = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(source) === "loadModels");
 const schedule = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(source) === "MODELS_RETRY_DELAYS_MS");
+// The retry effect re-runs when the instance's Lite mode changes, so the
+// model list follows the catalog the server answers with; the body under
+// test is the retry loop itself.
 const effect = nodes.find((node) => ts.isCallExpression(node)
   && node.expression.getText(source) === "useEffect"
-  && node.arguments[1]?.getText(source) === "[loadModels, modelsRefreshKey]");
+  && node.arguments[1]?.getText(source) === "[loadModels, modelsRefreshKey, liteModeEnabled]");
 const retry = effect.arguments[0].body.statements.find(ts.isExpressionStatement).expression;
 function script(text) {
   return new Script(ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText);
@@ -39,6 +42,8 @@ function setup(fetchImpl) {
     thinkingLevelPinsRef: { current: {} }, defaultThinkingLevelRef: { current: null },
     asConcreteThinkingLevel: (value) => (!value || value === "auto" ? null : value),
     fetch: fetchImpl,
+    // Unknown modes never apply to a tab: the server owns the setting.
+    liteModeEnabled: false,
     MODELS_RETRY_DELAYS_MS: script(schedule.initializer.getText(source)).runInNewContext(),
     delay: async (ms) => { delays.push(ms); },
   };

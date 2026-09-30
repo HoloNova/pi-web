@@ -27,6 +27,7 @@ import { FolderIcon, getFileIcon } from "./FileIcons";
 import { ImagePreview } from "./ImagePreview";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteMode } from "@/hooks/useLiteMode";
 import { useChatAppearance } from "@/hooks/useChatAppearance";
 import type { ToolPreset } from "@/lib/tool-presets";
 import { SelectorRow } from "./SelectorRow";
@@ -558,6 +559,25 @@ export function ModelScopeWarningBanner({ warnings }: { warnings?: string[] }) {
   );
 }
 
+/**
+ * True when the session's model is absent from the loaded list while this
+ * instance is in Lite mode.
+ *
+ * Lite lists only built-in and models.json models, so a model an extension
+ * registered is missing here. The session keeps using it (the selector shows
+ * its id), and this only decides whether to explain why it is not selectable.
+ * An empty list means "not loaded yet", never "missing".
+ */
+export function isModelMissingFromLiteCatalog(
+  model: { provider: string; modelId: string } | null | undefined,
+  modelList: { id: string; provider: string }[] | undefined,
+  liteMode: boolean,
+): boolean {
+  if (!liteMode || !model) return false;
+  if (!modelList || modelList.length === 0) return false;
+  return !modelList.some((m) => m.provider === model.provider && m.id === model.modelId);
+}
+
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
   defaultModel, onSetDefaultModel,
@@ -576,6 +596,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { t } = useI18n();
   const { fontSize } = useChatAppearance();
   const isMobile = useIsMobile();
+  const [liteModeEnabled] = useLiteMode();
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
   const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
@@ -1027,6 +1048,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   useEffect(() => {
     if (attachedImages.length === 0) setImageWarningDismissed(false);
   }, [attachedImages.length]);
+
+  // Lite mode hides extension-registered providers, so the session's own model
+  // can be missing from the selector. It is kept, and the banner explains why.
+  const liteModelMissing = isModelMissingFromLiteCatalog(model, modelList, liteModeEnabled);
 
   // ── @ file autocomplete ──────────────────────────────────────────────────
   // Recomputed from the text before the caret on every change/caret move.
@@ -1635,6 +1660,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div style={{ maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
+        {liteModelMissing && model && (
+          <ModelNoticeBanner
+            tone="warning"
+            title={t("chat.liteModelUnavailableTitle")}
+            body={t("chat.liteModelUnavailableBody", {
+              model: modelNames?.[`${model.provider}:${model.modelId}`] || model.modelId,
+            })}
+          />
+        )}
         {showImageUnsupportedWarning && (() => {
           const entry = modelList?.find((m) => m.provider === model?.provider && m.id === model?.modelId);
           return (

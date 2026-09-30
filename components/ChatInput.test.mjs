@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile } = await jiti.import("./ChatInput.tsx");
+const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, isModelMissingFromLiteCatalog, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile } = await jiti.import("./ChatInput.tsx");
 const { ModelSelector } = await jiti.import("./ModelSelector.tsx");
 const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store.ts");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
@@ -744,4 +744,23 @@ test("selector rows keep the default star and the floating save button in one gu
   const active = row({ active: true });
   assert.match(active, /aria-selected="true"/);
   assert.doesNotMatch(active, /border-left/);
+});
+
+test("a session model missing from the Lite list is surfaced, never treated as a switch", () => {
+  const model = { provider: "plugin", modelId: "only-here" };
+  const liteList = [{ id: "gpt-5.5", name: "GPT-5.5", provider: "openai" }];
+
+  // Only Lite mode hides extension-registered providers, and an empty list
+  // means "not loaded yet", so neither shows the notice.
+  assert.equal(isModelMissingFromLiteCatalog(model, liteList, true), true);
+  assert.equal(isModelMissingFromLiteCatalog(model, liteList, false), false);
+  assert.equal(isModelMissingFromLiteCatalog(model, [], true), false);
+  assert.equal(isModelMissingFromLiteCatalog(model, undefined, true), false);
+  assert.equal(isModelMissingFromLiteCatalog(null, liteList, true), false);
+  // A model the Lite list does carry is selectable, so nothing is missing.
+  assert.equal(isModelMissingFromLiteCatalog(
+    { provider: "openai", modelId: "gpt-5.5" },
+    liteList,
+    true,
+  ), false);
 });

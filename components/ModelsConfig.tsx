@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteMode } from "@/hooks/useLiteMode";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import {
@@ -1850,6 +1851,9 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
   // `enabledModels` lives in pi's settings, not models.json, so these switches
   // apply immediately instead of waiting for this panel's Save button.
   const enabledModels = useEnabledModels(cwd);
+  // Lite mode answers the provider and model reads from a catalog without
+  // extension-registered providers, so the panel has to say so.
+  const [liteMode] = useLiteMode();
   const [config, setConfig] = useState<ModelsJson>({ providers: {} });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -2113,6 +2117,10 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
     <ConfigPanelShell embedded={embedded} title={t("common.models")} subtitle="~/.pi/agent/models.json" closeLabel={t("i18n.close")} onClose={onClose}>
 
         <EnabledModelsBanner controller={enabledModels} />
+
+        {liteMode && (
+          <div className="lite-mode-notice">{t("models.liteCatalogNotice")}</div>
+        )}
 
         {/* Body */}
         <ConfigSplitView>

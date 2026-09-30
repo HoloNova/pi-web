@@ -22,7 +22,8 @@ import {
   type EnabledModelsView,
 } from "@/lib/enabled-models-runtime";
 import type { EnabledModelsInput } from "@/lib/enabled-models";
-import { createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { readLiteConfig } from "@/lib/lite-config-settings";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateModelsCache } from "@/lib/models-cache";
 
@@ -36,8 +37,18 @@ interface RequestContext {
   paths: { cwd: string; agentDir: string };
 }
 
-async function loadContext(cwd: string): Promise<RequestContext> {
-  const modelRuntime = await createModelRuntimeWithExtensions();
+/**
+ * `lite` picks the runtime that *describes* the catalog. It must be false for
+ * anything that decides a write: a Lite runtime has no extension-registered
+ * providers, so `prune` would delete their entries and a first toggle would
+ * materialize a scope that leaves their models out (see
+ * `lib/enabled-models.ts`). Reads may describe the Lite catalog so the panel
+ * matches what a Lite instance can actually select.
+ */
+async function loadContext(cwd: string, lite: boolean): Promise<RequestContext> {
+  const modelRuntime = lite
+    ? await createLiteModelRuntime()
+    : await createModelRuntimeWithExtensions();
   const agentDir = getAgentDir();
   return {
     modelRuntime,
@@ -94,7 +105,7 @@ export async function GET(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    return Response.json(await buildView(await loadContext(resolved.cwd)));
+    return Response.json(await buildView(await loadContext(resolved.cwd, readLiteConfig().enabled)));
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }
@@ -202,7 +213,13 @@ export async function PUT(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    const context = await loadContext(resolved.cwd);
+    // Every edit resolves against the full catalog, whatever the instance mode:
+    // this path performs minimal edits plus resync/prune, and a Lite catalog
+    // cannot tell a genuinely stale entry from one whose provider an extension
+    // registers. Only the returned view follows the mode, so a Lite panel keeps
+    // describing the Lite catalog.
+    const lite = readLiteConfig().enabled;
+    const context = await loadContext(resolved.cwd, false);
     const { patterns, scope } = readEnabledModelsSettings(context.settingsManager, context.paths);
     if (scope === "project") {
       return Response.json(
@@ -255,7 +272,8 @@ export async function PUT(req: Request) {
       invalidateModelsCache();
     }
 
-    return Response.json(await buildView(context));
+    const viewContext = lite ? await loadContext(resolved.cwd, true) : context;
+    return Response.json(await buildView(viewContext));
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }

@@ -27,6 +27,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
 import { userMessageKey } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
+import { useLiteMode } from "@/hooks/useLiteMode";
 import { isSystemMessageEvent } from "@/lib/agent-event-wire";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
 import { updateExtensionWidgets } from "@/lib/extension-widgets";
@@ -356,6 +357,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [extensionStatuses, setExtensionStatuses] = useState<ExtensionStatusItem[]>([]);
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
+  const [liteModeEnabled] = useLiteMode();
 
   const eventConnectionRef = useRef<AgentEventConnection | null>(null);
   const eventStreamGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2414,6 +2416,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
   // Load the model list with bounded retries; loadModels exposes each failure.
+  // Re-runs when the instance's Lite mode changes: the server answers the two
+  // modes from different catalogs.
   useEffect(() => {
     const controller = new AbortController();
     (async () => {
@@ -2431,7 +2435,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     })();
     return () => controller.abort();
-  }, [loadModels, modelsRefreshKey]);
+  }, [loadModels, modelsRefreshKey, liteModeEnabled]);
 
   useEffect(() => {
     if (!compactResult) return;
