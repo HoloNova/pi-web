@@ -2460,6 +2460,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
   // Load the model list with bounded retries; loadModels exposes each failure.
+  // Re-runs when the instance's Lite mode changes: the server answers the two
+  // modes from different catalogs.
   useEffect(() => {
     const controller = new AbortController();
     (async () => {
@@ -2477,7 +2479,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     })();
     return () => controller.abort();
-  }, [loadModels, modelsRefreshKey]);
+  }, [loadModels, modelsRefreshKey, liteModeEnabled]);
 
   useEffect(() => {
     if (!compactResult) return;

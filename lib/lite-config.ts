@@ -17,6 +17,15 @@ export interface LiteConfig {
   idleMinutes: number;
   /** Soft target for Pi-Web's own memory, in MiB. */
   memoryTargetMiB: number;
+  /**
+   * Whether reads may load extensions to list the models they register.
+   *
+   * Off by default: the model and provider reads then load no extension at
+   * all, which is the point of Lite mode. Turning it on makes those reads use
+   * the same catalogue normal mode does — extension-registered providers
+   * included — so the session/extension lifetime is the only difference left.
+   */
+  extensionModels: boolean;
 }
 
 export interface LiteValueBounds {
@@ -49,6 +58,7 @@ export const DEFAULT_LITE_CONFIG: LiteConfig = {
   enabled: false,
   idleMinutes: DEFAULT_LITE_IDLE_MINUTES,
   memoryTargetMiB: DEFAULT_MEMORY_TARGET_MIB,
+  extensionModels: false,
 };
 
 function isWholeNumberInRange(value: unknown, min: number, max: number): value is number {
@@ -78,5 +88,8 @@ export function coerceLiteConfig(stored: unknown): LiteConfig {
     memoryTargetMiB: isValidMemoryTargetMiB(record.memoryTargetMiB)
       ? record.memoryTargetMiB
       : DEFAULT_LITE_CONFIG.memoryTargetMiB,
+    extensionModels: typeof record.extensionModels === "boolean"
+      ? record.extensionModels
+      : DEFAULT_LITE_CONFIG.extensionModels,
   };
 }

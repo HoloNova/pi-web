@@ -96,8 +96,25 @@ test("a write that changes nothing else still answers with the whole configurati
     enabled: DEFAULT_LITE_CONFIG.enabled,
     idleMinutes: MAX_LITE_IDLE_MINUTES,
     memoryTargetMiB: DEFAULT_LITE_CONFIG.memoryTargetMiB,
+    extensionModels: DEFAULT_LITE_CONFIG.extensionModels,
     bounds: LITE_CONFIG_BOUNDS,
   });
+});
+
+test("the extension-model switch is a stored boolean like the others", async (t) => {
+  t.after(async () => { await rm(settingsPath, { force: true }); });
+  const on = await (await PUT(put({ extensionModels: true }))).json();
+  assert.equal(on.extensionModels, true);
+  // A partial write: the mode and the ranges are untouched.
+  assert.equal(on.enabled, DEFAULT_LITE_CONFIG.enabled);
+  assert.equal(on.idleMinutes, on.bounds.idleMinutes.default);
+
+  const offAgain = await (await PUT(put({ extensionModels: false }))).json();
+  assert.equal(offAgain.extensionModels, false);
+
+  const bad = await PUT(put({ extensionModels: "on" }));
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /extensionModels must be a boolean/);
 });
 
 test("out-of-range and unknown fields are refused with the range in the message", async (t) => {

@@ -332,6 +332,16 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
               />
             </div>
             <p className="settings-general-description">{t("settings.liteIdleMinutesDescription")}</p>
+            <div className="settings-shell-option">
+              <span>{t("settings.liteExtensionModels")}</span>
+              <ConfigSwitch
+                checked={liteSnapshot.config.extensionModels}
+                loading={liteSnapshot.saving || !liteSnapshot.loaded}
+                label={t("settings.liteExtensionModels")}
+                onChange={(extensionModels) => void saveLiteConfig({ extensionModels })}
+              />
+            </div>
+            <p className="settings-general-description">{t("settings.liteExtensionModelsDescription")}</p>
           </>
         )}
         {liteSnapshot.error && <p role="alert" className="settings-general-error">{liteSnapshot.error}</p>}

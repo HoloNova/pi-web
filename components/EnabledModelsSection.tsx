@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteMode } from "@/hooks/useLiteMode";
 import type { EnabledModelsView } from "@/lib/enabled-models";
 import {
   enabledModelsBulkActions,
@@ -83,6 +84,10 @@ export function useEnabledModels(cwd?: string | null): EnabledModelsController {
   const mutateRef = useRef<((key: string, body: MutationBody) => void) | null>(null);
 
   const [reloadKey, setReloadKey] = useState(0);
+  // The instance's mode changes what the server describes, so the read
+  // follows it. The write stays on the full catalog server-side and only its
+  // returned view follows the mode.
+  const [liteMode] = useLiteMode();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -103,7 +108,7 @@ export function useEnabledModels(cwd?: string | null): EnabledModelsController {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [cwd, reloadKey]);
+  }, [cwd, reloadKey, liteMode]);
 
   const mutate = useCallback((key: string, body: MutationBody) => {
     // A save can land while a switch is still in flight; queue it rather than
