@@ -17,6 +17,11 @@ import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trus
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider, onSessionPresenceReleased } from "./session-liveness";
 import { hasDelegatedWorkRunning } from "./delegated-work";
+import {
+  runIdleReclaimPass,
+  type ReclaimCandidate,
+  type ReclaimPassResult,
+} from "./lite-memory-reclaim";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
@@ -500,6 +505,15 @@ export class AgentSessionWrapper {
   private markActivity(): void {
     this.lastActivityAtMs = Date.now();
     this.armIdleTimer();
+  }
+
+  /**
+   * Epoch ms of the last real activity. Memory pressure orders reclaim
+   * candidates by this, so it has to stay "when the session last did
+   * something", not "when a timer was last maintained".
+   */
+  lastActivityAt(): number {
+    return this.lastActivityAtMs;
   }
 
   /** (Re)start the idle window. Timer bookkeeping only — never the LRU key. */
@@ -1762,6 +1776,43 @@ export function reclaimIdleRpcSession(sessionId: string): boolean {
     console.error("[pi-web] failed to reclaim an idle session:", error instanceof Error ? error.message : error);
   });
   return true;
+}
+
+/**
+ * Every live wrapper with the facts memory pressure orders and protects by.
+ * Reads state only; nothing here closes or touches a session.
+ */
+export function collectMemoryReclaimCandidates(): ReclaimCandidate[] {
+  const candidates: ReclaimCandidate[] = [];
+  for (const [registryId, wrapper] of getRegistry()) {
+    if (!wrapper.isAlive() || wrapper.isClosing()) continue;
+    candidates.push({
+      sessionId: wrapper.sessionId || registryId,
+      lastActivityAt: wrapper.lastActivityAt(),
+      running: wrapper.isRunning(),
+      delegated: wrapper.hasDelegatedWork(),
+      viewed: hasActiveSessionLivenessProvider({
+        sessionId: wrapper.sessionId,
+        sessionFile: wrapper.sessionFile || undefined,
+      }),
+    });
+  }
+  return candidates;
+}
+
+/**
+ * Lite mode's memory-pressure policy: close the oldest idle wrapper, through the
+ * same reclaim path presence release uses. A running task is never interrupted
+ * and a session another tab/device is viewing is never closed, so a pass may
+ * reclaim nothing at all — the caller then reports the over-target state instead
+ * of escalating. Processes are never killed and systemd is never touched.
+ */
+export function runMemoryPressureReclaim(limit?: number): ReclaimPassResult {
+  return runIdleReclaimPass(
+    collectMemoryReclaimCandidates(),
+    { reclaim: (sessionId) => reclaimIdleRpcSession(sessionId) },
+    limit === undefined ? {} : { limit },
+  );
 }
 
 function registerRpcWrapper(wrapper: AgentSessionWrapper): void {

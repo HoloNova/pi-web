@@ -230,6 +230,68 @@
   white-space: nowrap;
 }
 
+/* Memory target: the number and the reading it is judged against. The state
+   pill is the only colour, so "near" and "over" stand out from the muted
+   readout without turning the whole row into a warning. */
+.settings-memory-target > .settings-shell-option {
+  gap: 8px;
+}
+
+.settings-memory-target input[type="number"],
+.settings-idle-minutes input[type="number"] {
+  width: 88px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: right;
+}
+
+.settings-idle-minutes input[type="number"] {
+  width: 64px;
+}
+
+.settings-idle-minutes > label {
+  flex: 1;
+}
+
+.settings-memory-readout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.settings-memory-state {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.settings-memory-state[data-state="near"] {
+  border-color: #d97706;
+  color: #d97706;
+}
+
+.settings-memory-state[data-state="over"] {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.settings-memory-saved {
+  margin: 8px 0 0;
+  color: var(--accent);
+  font-size: 11px;
+}
+
 .enabled-models-section {
   display: flex;
   flex-direction: column;
