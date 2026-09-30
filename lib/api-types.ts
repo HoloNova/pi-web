@@ -1,4 +1,5 @@
 import type { ResourceDiagnostic } from "@earendil-works/pi-coding-agent";
+import type { LiteConfig, LiteConfigBounds } from "./lite-config";
 import type { SubagentProfile } from "./subagents";
 
 export interface SubagentProfilesResponse {
@@ -152,4 +153,13 @@ export interface PluginsResponse {
   totals: PluginResourceCounts;
   diagnostics: PluginDiagnostic[];
   projectResourcesLoaded: boolean;
+}
+
+/**
+ * GET/PUT /api/lite — the instance's Lite configuration. The values and the
+ * bounds they are validated against are shared by every client; see
+ * lib/lite-config.ts for what each one means.
+ */
+export interface LiteConfigResponse extends LiteConfig {
+  bounds: LiteConfigBounds;
 }
