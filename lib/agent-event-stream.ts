@@ -19,22 +19,42 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  * stops reading (screen off, backgrounded tab, flaky network) every event we
  * keep enqueueing stays in this process.
  *
- *  - above STREAM_HIGH_WATER_MARK_BYTES we drop events the client can rebuild
- *    from session state (streaming deltas, partial tool output);
+ *  - above STREAM_HIGH_WATER_MARK_BYTES we drop events a later event repairs
+ *    (streaming deltas, partial tool output);
  *  - above the backlog limit we terminate the stream instead, so the client
  *    reconnects and re-snapshots.
  *
  * Measured before this: a single 24 MB command with a client that stopped
  * reading left 22.7 MB queued here, and that memory only comes back with a GC
  * this app never triggers (issue #923).
+ *
+ * The limit also has to absorb what a healthy client on a slow link has in
+ * flight: one `read` of an image emits its base64 three times
+ * (`tool_execution_end`, then the tool result's `message_start` and
+ * `message_end`), and those queue up while the first one is still being
+ * written to the socket.
  */
 const STREAM_HIGH_WATER_MARK_BYTES = 512 * 1024;
-const DEFAULT_BACKLOG_LIMIT_BYTES = 4 * 1024 * 1024;
-/** Rebuildable from the session snapshot / reconcile, so droppable when behind. */
-const DROPPABLE_EVENT_TYPES = new Set(["message_update", "tool_execution_update"]);
+const DEFAULT_BACKLOG_LIMIT_BYTES = 16 * 1024 * 1024;
 const BACKPRESSURE_LOG_INTERVAL_MS = 60_000;
 let lastBackpressureLogAt = 0;
 
+/**
+ * Whether a later event repairs this one if it is dropped. A `*_delta` only
+ * extends a block that its `*_end` replaces with the authoritative content, and
+ * `tool_execution_update` carries the whole partial result, which the next update
+ * or `tool_execution_end` supersedes. `*_start` / `*_end` are never dropped: the
+ * client's stream reducer creates and finalizes blocks from them.
+ */
+function isDroppableEvent(event: AgentEventLike): boolean {
+  if (event.type === "tool_execution_update") return true;
+  if (event.type !== "message_update") return false;
+  const update = event.assistantMessageEvent;
+  return typeof update === "object"
+    && update !== null
+    && typeof (update as { type?: unknown }).type === "string"
+    && (update as { type: string }).type.endsWith("_delta");
+}
 function resolveBacklogLimitBytes(): number {
   const raw = Number(process.env.PI_WEB_SSE_BACKLOG_LIMIT_BYTES);
   return Number.isFinite(raw) && raw >= 64 * 1024 ? raw : DEFAULT_BACKLOG_LIMIT_BYTES;
@@ -170,7 +190,7 @@ export function createAgentEventStream(
         if (isEventIncludedInSnapshot(event, snapshot)) return;
         const clientEvent = toClientAgentEvent(event);
         if (clientEvent) {
-          encode(clientEvent, { droppable: DROPPABLE_EVENT_TYPES.has(clientEvent.type) });
+          encode(clientEvent, { droppable: isDroppableEvent(clientEvent) });
         }
       };
 
