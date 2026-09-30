@@ -1,4 +1,4 @@
-import type { MemoryReclaimResponse, MemoryStatusResponse } from "@/lib/api-types";
+import type { MemoryStatusResponse } from "@/lib/api-types";
 
 /**
  * The status read measures the service, so polling it hard would create work for
@@ -17,8 +17,8 @@ export type MemoryStatusListener = (snapshot: MemoryStatusSnapshot) => void;
 export interface MemoryStatusSubscribeOptions {
   /**
    * Keep the shared poll loop alive while this subscriber is present. A
-   * subscriber that only needs the value it is handed (and the broadcast after
-   * a reclaim) leaves this false and never keeps the loop alive on its own.
+   * subscriber that only renders what it is handed leaves this false and never
+   * keeps the loop alive on its own.
    */
   poll: boolean;
 }
@@ -84,18 +84,6 @@ export function refreshMemoryStatus(): Promise<void> {
   return inFlight;
 }
 
-/**
- * Ask the server to close the oldest idle session, then re-read the footprint.
- * Only a Lite instance acts on it: a normal-mode server refuses the pass.
- */
-export async function reclaimIdleSessions(): Promise<MemoryReclaimResponse> {
-  const response = await fetch("/api/memory/reclaim", { method: "POST" });
-  const data = await response.json() as MemoryReclaimResponse & { error?: string };
-  if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
-  await refreshMemoryStatus();
-  return data;
-}
-
 function wantsPoll(): boolean {
   for (const subscriber of subscribers) {
     if (subscriber.poll) return true;
@@ -143,7 +131,7 @@ function detachVisibilityListener(): void {
 /**
  * Subscribe to the shared snapshot. The first polling subscriber starts the one
  * shared poll loop; the last one to leave stops it. A non-polling subscriber
- * still receives every broadcast, including the one a reclaim emits.
+ * still receives every broadcast.
  */
 export function subscribeMemoryStatus(
   listener: MemoryStatusListener,

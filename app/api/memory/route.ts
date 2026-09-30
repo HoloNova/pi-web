@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import { MEMORY_BYTES_PER_MIB, MEMORY_NEAR_TARGET_RATIO, memoryPressureState } from "@/lib/memory-pressure";
 import { readLiteConfig } from "@/lib/lite-config-settings";
 import { readServiceMemoryReading } from "@/lib/service-memory";
-import { collectMemoryReclaimCandidates } from "@/lib/rpc-manager";
-import { planIdleReclaim } from "@/lib/lite-memory-reclaim";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +10,11 @@ const NO_STORE = { "Cache-Control": "no-store" };
 /**
  * GET /api/memory
  *
- * The service footprint against the instance's memory target. **Read-only**: it
- * measures, and it counts what a reclaim pass *could* close, but it never
- * closes anything — a plain read must not change how the service behaves.
- * Closing a session is `POST /api/memory/reclaim`.
+ * The service footprint against the instance's memory target. **Read-only, and
+ * cheap**: it reads the configuration, measures the service and compares the two.
+ * It never closes anything and never walks sessions — the policy that acts on
+ * pressure is the server's own monitor (lib/lite-memory-monitor.ts), which runs
+ * whether or not a page is open.
  *
  * The target is part of Lite mode's configuration and only applies there, so a
  * normal-mode instance reports the inactive shape: no target, no state, no
@@ -30,7 +29,6 @@ export async function GET() {
     const reading = readServiceMemoryReading();
     const targetMiB = config.memoryTargetMiB;
     const state = memoryPressureState(reading.bytes, targetMiB);
-    const plan = planIdleReclaim(collectMemoryReclaimCandidates());
     return NextResponse.json({
       active: true,
       targetMiB,
@@ -41,8 +39,6 @@ export async function GET() {
       source: reading.source,
       approximate: reading.approximate,
       detail: reading.detail,
-      /** Idle, unviewed sessions a reclaim pass could close right now. */
-      idleSessions: plan.reclaim.length,
     }, { headers: NO_STORE });
   } catch (error) {
     return NextResponse.json(

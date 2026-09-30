@@ -164,20 +164,6 @@ export interface LiteConfigResponse extends LiteConfig {
   bounds: LiteConfigBounds;
 }
 
-/** POST /api/memory/reclaim — what one pressure pass saw and closed. */
-export interface MemoryReclaimResponse {
-  /** Session ids whose shutdown was started, oldest first. */
-  reclaimed: string[];
-  /** Idle, unviewed sessions that were eligible this pass. */
-  reclaimable: number;
-  /** Running sessions seen, left alone. */
-  running: number;
-  /** Sessions another tab or device is viewing, left alone. */
-  viewed: number;
-  /** Sessions whose delegated child run is still working, left alone. */
-  delegated: number;
-}
-
 /**
  * GET /api/memory — the service footprint against the instance's memory target.
  *
@@ -202,6 +188,4 @@ export interface MemoryStatusActiveResponse {
   source: "cgroup" | "process-rss";
   approximate: boolean;
   detail: string;
-  /** Idle, unviewed sessions a reclaim pass could close right now. */
-  idleSessions: number;
 }

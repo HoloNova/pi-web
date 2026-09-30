@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { MemoryReclaimResponse, MemoryStatusResponse } from "@/lib/api-types";
+import type { MemoryStatusResponse } from "@/lib/api-types";
 import {
   EMPTY_MEMORY_STATUS_SNAPSHOT,
   getMemoryStatusSnapshot,
-  reclaimIdleSessions,
   refreshMemoryStatus,
   subscribeMemoryStatus,
   type MemoryStatusSnapshot,
@@ -25,14 +24,13 @@ export interface MemoryStatusResult {
   error: string | null;
   /** Re-read once. */
   refresh: () => Promise<void>;
-  /** Close the oldest idle session and re-read. */
-  reclaim: () => Promise<MemoryReclaimResponse>;
 }
 
 /**
  * Subscribes to the shared memory-status store (lib/memory-status-store.ts).
- * Every surface renders the same snapshot, one poll loop serves them all, and a
- * reclaim in one surface reaches the other without waiting for a poll.
+ * Every surface renders the same snapshot and one poll loop serves them all.
+ * Display only: the policy that acts on pressure belongs to the server
+ * (lib/lite-memory-monitor.ts).
  */
 export function useMemoryStatus({ enabled, poll }: MemoryStatusOptions): MemoryStatusResult {
   const [snapshot, setSnapshot] = useState<MemoryStatusSnapshot>(EMPTY_MEMORY_STATUS_SNAPSHOT);
@@ -52,6 +50,5 @@ export function useMemoryStatus({ enabled, poll }: MemoryStatusOptions): MemoryS
     status: snapshot.status,
     error: snapshot.error,
     refresh: refreshMemoryStatus,
-    reclaim: reclaimIdleSessions,
   };
 }
