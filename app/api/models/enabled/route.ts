@@ -23,7 +23,7 @@ import {
 } from "@/lib/enabled-models-runtime";
 import type { EnabledModelsInput } from "@/lib/enabled-models";
 import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
-import { readLiteConfig } from "@/lib/lite-config-settings";
+import { readsUseLiteCatalog } from "@/lib/lite-config-settings";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateModelsCache } from "@/lib/models-cache";
 
@@ -105,7 +105,7 @@ export async function GET(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    return Response.json(await buildView(await loadContext(resolved.cwd, readLiteConfig().enabled)));
+    return Response.json(await buildView(await loadContext(resolved.cwd, readsUseLiteCatalog())));
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }
@@ -218,7 +218,7 @@ export async function PUT(req: Request) {
     // cannot tell a genuinely stale entry from one whose provider an extension
     // registers. Only the returned view follows the mode, so a Lite panel keeps
     // describing the Lite catalog.
-    const lite = readLiteConfig().enabled;
+    const lite = readsUseLiteCatalog();
     const context = await loadContext(resolved.cwd, false);
     const { patterns, scope } = readEnabledModelsSettings(context.settingsManager, context.paths);
     if (scope === "project") {

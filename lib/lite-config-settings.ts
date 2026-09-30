@@ -50,6 +50,19 @@ export function readLiteConfig(path = getLiteSettingsPath()): LiteConfig {
   }
 }
 
+/**
+ * Whether the model and provider reads should answer from the built-in
+ * catalogue only.
+ *
+ * A Lite instance does that unless `extensionModels` is on: extension-registered
+ * providers then show up exactly as they do in normal mode, and the read takes
+ * the extension-loading path with it.
+ */
+export function readsUseLiteCatalog(path = getLiteSettingsPath()): boolean {
+  const config = readLiteConfig(path);
+  return config.enabled && !config.extensionModels;
+}
+
 /** The fields a caller may change; anything omitted keeps its stored value. */
 export type LiteConfigPatch = Partial<LiteConfig>;
 
@@ -68,6 +81,9 @@ export function writeLiteConfig(patch: LiteConfigPatch, path = getLiteSettingsPa
   }
   if (patch.memoryTargetMiB !== undefined && !isValidMemoryTargetMiB(patch.memoryTargetMiB)) {
     throw new Error(`memoryTargetMiB must be a whole number between ${MIN_MEMORY_TARGET_MIB} and ${MAX_MEMORY_TARGET_MIB}`);
+  }
+  if (patch.extensionModels !== undefined && typeof patch.extensionModels !== "boolean") {
+    throw new Error("extensionModels must be a boolean");
   }
   const stored = readStored(path);
   const next: LiteConfig = { ...coerceLiteConfig(stored.lite), ...patch };

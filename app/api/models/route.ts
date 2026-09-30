@@ -15,7 +15,7 @@ import {
   type ModelsData,
 } from "@/lib/models-cache";
 import { createLiteModelRuntime } from "@/lib/model-runtime";
-import { readLiteConfig } from "@/lib/lite-config-settings";
+import { readsUseLiteCatalog } from "@/lib/lite-config-settings";
 import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
@@ -129,10 +129,10 @@ const EMPTY_MODELS: ModelsData = {
 export async function GET(req: Request) {
   const requestedCwd = new URL(req.url).searchParams.get("cwd") || process.cwd();
   const cwd = resolve(requestedCwd);
-  // The instance decides the catalog, not the request: a Lite instance
-  // answers built-in and models.json models, and no client can ask for the
-  // extension-loading one.
-  const lite = readLiteConfig().enabled;
+  // The instance decides the catalog, not the request, and no client can ask
+  // for the extension-loading one. A Lite instance answers built-in and
+  // models.json models unless its operator asked for the full list.
+  const lite = readsUseLiteCatalog();
 
   let cwdStat;
   try {

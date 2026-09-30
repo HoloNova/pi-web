@@ -92,9 +92,15 @@ export async function PUT(req: Request) {
     }
     patch.memoryTargetMiB = input.memoryTargetMiB;
   }
+  if ("extensionModels" in input) {
+    if (typeof input.extensionModels !== "boolean") {
+      return NextResponse.json({ error: "extensionModels must be a boolean" }, { status: 400, headers: NO_STORE });
+    }
+    patch.extensionModels = input.extensionModels;
+  }
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({
-      error: "Provide at least one of enabled, idleMinutes, memoryTargetMiB",
+      error: "Provide at least one of enabled, idleMinutes, memoryTargetMiB, extensionModels",
     }, { status: 400, headers: NO_STORE });
   }
 

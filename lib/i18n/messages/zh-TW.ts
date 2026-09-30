@@ -36,6 +36,8 @@ export const zhTWLocale: LocalePlugin = {
     "settings.liteMode": "精簡模式（Lite）",
     "settings.liteModeDescription": "伺服器全域設定：連到此 Pi Web 的每個瀏覽器與裝置都使用同一模式。閒置頁面在下方設定的時間後釋放工作階段；最小化視窗不會關閉工作階段。",
     "settings.liteIdleMinutes": "釋放前的閒置時間",
+    "settings.liteExtensionModels": "列出擴充套件註冊的模型",
+    "settings.liteExtensionModelsDescription": "關閉時，模型與提供者清單完全不載入擴充套件——這正是 Lite 模式的意義，因此只有擴充套件註冊的模型無法在這裡選擇。打開後，這些清單會載入全部已設定的擴充套件、顯示與一般模式相同的目錄；每次讀取會建立一個短命工作階段，並在清單產生後立即關閉，不會留下已載入的擴充套件。",
     "settings.liteIdleMinutesDescription": "多久沒有真實操作後，閒置頁面釋放其工作階段（1-60）。執行中的工作絕不中斷。",
     "settings.chat": "對話",
     "settings.quoteSelection": "選取文字時顯示提問浮窗",

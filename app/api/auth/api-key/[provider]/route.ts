@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { removeStoredCredentialIfType, storeProviderCredential } from "@/lib/provider-credential-store";
 import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
-import { readLiteConfig } from "@/lib/lite-config-settings";
+import { readsUseLiteCatalog } from "@/lib/lite-config-settings";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +18,7 @@ export async function POST(req: Request, { params }: Params) {
     }
     // A Lite instance only offers built-in and models.json providers, so the
     // built-in catalog carries the auth method and no extension needs to load.
-    const modelRuntime = readLiteConfig().enabled
+    const modelRuntime = readsUseLiteCatalog()
       ? await createLiteModelRuntime()
       : await createModelRuntimeWithExtensions();
     const apiKeyAuth = modelRuntime.getProvider(provider)?.auth.apiKey;

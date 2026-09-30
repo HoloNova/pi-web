@@ -36,6 +36,8 @@ export const zhCNLocale: LocalePlugin = {
     "settings.liteMode": "轻量模式（Lite）",
     "settings.liteModeDescription": "服务器全局设置：连接到此 Pi Web 的每个浏览器和设备都使用同一模式。空闲页面在下方设定的时长后释放会话；最小化窗口不会关闭会话。",
     "settings.liteIdleMinutes": "释放前的空闲时长",
+    "settings.liteExtensionModels": "列出扩展注册的模型",
+    "settings.liteExtensionModelsDescription": "关闭时，模型与提供商列表完全不加载扩展——这正是 Lite 模式的意义，因此只有扩展注册的模型无法在这里选择。打开后，这些列表会加载全部已配置扩展、显示与普通模式相同的目录；每次读取会创建一个短命会话，并在列表生成后立即关闭，不会留下已加载的扩展。",
     "settings.liteIdleMinutesDescription": "无真实操作多少分钟后，空闲页面释放其会话（1-60）。正在运行的任务绝不中断。",
     "settings.chat": "对话",
     "settings.quoteSelection": "选中文字时显示提问浮窗",

@@ -36,6 +36,8 @@ export const enLocale: LocalePlugin = {
     "settings.liteMode": "Lite mode",
     "settings.liteModeDescription": "A server-wide setting: every browser and device connected to this Pi Web uses the same mode. An idle page releases its session after the idle time below; minimizing the window does not close it.",
     "settings.liteIdleMinutes": "Idle time before release",
+    "settings.liteExtensionModels": "List models registered by extensions",
+    "settings.liteExtensionModelsDescription": "Off, the model and provider reads load no extension at all — that is the point of Lite mode — so a model only an extension registers cannot be picked here. On, those reads load every configured extension and offer the same catalogue normal mode does; each read then closes the session it created as soon as the list is built, leaving nothing loaded.",
     "settings.liteIdleMinutesDescription": "Minutes without real interaction before an idle page releases its session (1-60). Running tasks are never interrupted.",
     "settings.chat": "Chat",
     "settings.quoteSelection": "Show actions for selected text",

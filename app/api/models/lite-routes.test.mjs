@@ -58,7 +58,7 @@ export class ModelRuntime {
 }
 `;
 
-async function makeJiti(lite) {
+async function makeJiti(lite, extensionModels = false) {
   const dir = await mkdtemp(join(tmpdir(), "pi-web-lite-routes-"));
   const agentDir = join(dir, "agent");
   const stubPath = join(dir, "pi-coding-agent-stub.mjs");
@@ -67,7 +67,7 @@ async function makeJiti(lite) {
   // lib/lite-config-settings.ts reads this file from the agent dir.
   await writeFile(
     join(agentDir, "pi-web-settings.json"),
-    JSON.stringify({ version: 1, lite: { enabled: lite } }),
+    JSON.stringify({ version: 1, lite: { enabled: lite, extensionModels } }),
     "utf8",
   );
   globalThis.__piWebAgentDir = agentDir;
@@ -125,14 +125,14 @@ test("the model reads pick their runtime from the instance setting", async () =>
   const providersRoute = await readFile(new URL("../auth/providers/route.ts", import.meta.url), "utf8");
 
   // Lite reads never import the extension set; normal reads still do.
-  assert.match(modelsRoute, /const lite = readLiteConfig\(\)\.enabled/);
+  assert.match(modelsRoute, /const lite = readsUseLiteCatalog\(\)/);
   assert.match(modelsRoute, /modelRuntime = await createLiteModelRuntime\(\)/);
   assert.match(modelsRoute, /modelRuntime = services\.modelRuntime/);
   assert.match(modelsRoute, /const services = await createAgentSessionServices\(/);
   // The cache key carries the mode, so a Lite load cannot serve a normal read.
   assert.match(modelsRoute, /modelsCacheKey\(cwd, lite\)/);
 
-  assert.match(providersRoute, /readLiteConfig\(\)\.enabled/);
+  assert.match(providersRoute, /readsUseLiteCatalog\(\)/);
   assert.match(providersRoute, /await createLiteModelRuntime\(\)/);
   assert.match(providersRoute, /await createModelRuntimeWithExtensions\(\)/);
 });
@@ -142,11 +142,27 @@ test("the enabledModels write path always resolves against the full catalog", as
   const put = source.slice(source.indexOf("export async function PUT"));
 
   // GET describes the instance's catalog; PUT never does.
-  assert.match(source, /buildView\(await loadContext\(resolved\.cwd, readLiteConfig\(\)\.enabled\)\)/);
-  assert.match(put, /const lite = readLiteConfig\(\)\.enabled/);
+  assert.match(source, /buildView\(await loadContext\(resolved\.cwd, readsUseLiteCatalog\(\)\)\)/);
+  assert.match(put, /const lite = readsUseLiteCatalog\(\)/);
   assert.match(put, /const context = await loadContext\(resolved\.cwd, false\)/);
   // The edit is computed from that full context; only the returned view follows
   // the mode, so a Lite panel keeps describing the Lite catalog.
   assert.match(put, /const viewContext = lite \? await loadContext\(resolved\.cwd, true\) : context/);
-  assert.doesNotMatch(put, /loadContext\(resolved\.cwd, readLiteConfig\(\)\.enabled\)/);
+  assert.doesNotMatch(put, /loadContext\(resolved\.cwd, readsUseLiteCatalog\(\)\)/);
+});
+
+test("the extension-model switch puts the reads back on the full catalogue", async () => {
+  // Normal mode and a Lite instance with the switch on must both load the
+  // extensions that register providers; only Lite-without-the-switch does not.
+  for (const [lite, extensionModels, expected] of [
+    [true, false, ["ModelRuntime.create"]],
+    [true, true, ["createAgentSessionServices"]],
+    [false, false, ["createAgentSessionServices"]],
+  ]) {
+    const run = await makeJiti(lite, extensionModels);
+    const { GET } = await run.jiti.import(join(process.cwd(), "app/api/auth/providers/route.ts"));
+    const response = await GET();
+    assert.equal(response.status, 200);
+    assert.deepEqual(run.calls(), expected, `lite=${lite} extensionModels=${extensionModels}`);
+  }
 });
