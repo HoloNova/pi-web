@@ -16,6 +16,7 @@ import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, rea
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
+import { hasDelegatedWorkRunning } from "./delegated-work";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
@@ -37,7 +38,7 @@ import {
   readSubagentSessionResources,
   SUBAGENT_CONTROL_TOOL_NAMES,
 } from "./subagents";
-import { createSubagentController } from "./subagent-runtime";
+import { createSubagentController, hasActiveSubagentRunForParent } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
@@ -289,6 +290,26 @@ export class AgentSessionWrapper {
   }
 
   /**
+   * Delegated children still working under this session: a built-in subagent run
+   * whose parent is this session, or a child run from any plugin that is still
+   * writing under this session's artifact directory. An async subagent outlives
+   * the parent turn it was started from, so `isRunning()` alone cannot see it.
+   */
+  hasDelegatedWork(): boolean {
+    if (!this._alive) return false;
+    if (hasActiveSubagentRunForParent(this.sessionId)) return true;
+    return hasDelegatedWorkRunning({ sessionId: this.sessionId, sessionFile: this.sessionFile });
+  }
+
+  /**
+   * The wrapper's own turn OR delegated work still running underneath it. Every
+   * path that closes a session asks this, so a child run is never cut off.
+   */
+  isBusy(): boolean {
+    return this.isRunning() || this.hasDelegatedWork();
+  }
+
+  /**
    * Drop this idle wrapper when the on-disk JSONL has an entry the in-memory
    * index never saw (another pi process appended). Rechecks isRunning() so a
    * prompt that started during the probe cannot be disposed.
@@ -463,10 +484,17 @@ export class AgentSessionWrapper {
     if (SESSION_IDLE_TIMEOUT_MS === 0) return;
     if (!this.isRunning()) this.forceShutdownOnIdle = false;
     this.idleTimer = setTimeout(() => {
-      if (!this.forceShutdownOnIdle && (this.isRunning() || hasActiveSessionLivenessProvider({
-        sessionId: this.sessionId,
-        sessionFile: this.sessionFile || undefined,
-      }))) {
+      // A delegated child keeps the session exactly as warm as a running turn
+      // does: the idle window simply starts over. Closing sooner than that is a
+      // memory-policy decision, not the idle timer's.
+      if (!this.forceShutdownOnIdle && (
+        this.isRunning()
+        || this.hasDelegatedWork()
+        || hasActiveSessionLivenessProvider({
+          sessionId: this.sessionId,
+          sessionFile: this.sessionFile || undefined,
+        })
+      )) {
         this.resetIdleTimer();
         return;
       }
@@ -1673,6 +1701,17 @@ function getRegistry(): Map<string, AgentSessionWrapper> {
   return globalThis.__piSessions;
 }
 
+/**
+ * Busy means the wrapper's own turn is in flight *or* delegated work is still
+ * running underneath it. Fakes in tests may only implement `isRunning()`, so
+ * each capability is probed rather than assumed.
+ */
+function wrapperIsBusy(wrapper: AgentSessionWrapper): boolean {
+  if (typeof wrapper.isBusy === "function") return wrapper.isBusy();
+  if (typeof wrapper.hasDelegatedWork === "function") return wrapper.isRunning() || wrapper.hasDelegatedWork();
+  return wrapper.isRunning();
+}
+
 function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
   const registry = getRegistry();
   const sessionId = wrapper.sessionId;
@@ -1908,7 +1947,7 @@ export function hasBusyRpcSessionForCwd(cwd: string): boolean {
   const targetCwd = normalizeRpcCwd(cwd);
   if (getStartingSessionCwds().has(targetCwd)) return true;
   return Array.from(getRegistry().values()).some(
-    (session) => normalizeRpcCwd(session.cwd) === targetCwd && session.isRunning(),
+    (session) => normalizeRpcCwd(session.cwd) === targetCwd && wrapperIsBusy(session),
   );
 }
 
@@ -1924,7 +1963,7 @@ export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
 export function getRunningRpcSessionIds(): string[] {
   const ids = new Set<string>();
   for (const [sessionId, session] of getRegistry()) {
-    if (session.isRunning()) ids.add(session.sessionId || sessionId);
+    if (wrapperIsBusy(session)) ids.add(session.sessionId || sessionId);
   }
   return [...ids];
 }
