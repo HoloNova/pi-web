@@ -1,0 +1,69 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const source = (await readFile(new URL("./useLiteSessionLifecycle.ts", import.meta.url), "utf8"))
+  .replace(/\r\n/g, "\n");
+
+test("presence is held per page and released through the presence endpoint", () => {
+  assert.match(source, /createLitePresenceController\(getClientId\(\)/);
+  assert.match(source, /fetch\(`\/api\/agent\/\$\{encodeURIComponent\(sessionId\)\}\/presence`/);
+  assert.match(source, /body: JSON\.stringify\(\{ clientId, action \}\)/);
+  // Page hide releases immediately; the TTL fallback covers a page that dies.
+  assert.match(source, /addEventListener\("pagehide", onPageHide\)/);
+  assert.match(source, /controller\.release\(sid, \{ immediate: true \}\)/);
+});
+
+test("renews on an interval and follows the pure configured-window rule", () => {
+  assert.match(source, /LITE_PRESENCE_RENEW_INTERVAL_MS = 30_000/);
+  assert.match(source, /setInterval\(\(\) => controller\.renew\(sid\), LITE_PRESENCE_RENEW_INTERVAL_MS\)/);
+  assert.match(source, /shouldHoldLitePresence\(\{/);
+  assert.match(source, /liteIdleDeadlineIn\(lastInteractionAt, Date\.now\(\), idleTimeoutMsRef\.current\)/);
+  assert.match(source, /for \(const event of LITE_INTERACTION_EVENTS\) \{/);
+  assert.match(source, /document\.addEventListener\("visibilitychange", onVisibility\)/);
+});
+
+test("reads the instance idle window live and re-arms the deadline on change", () => {
+  assert.match(source, /const \{ snapshot \} = useLiteConfig\(\)/);
+  assert.match(source, /const idleMinutes = snapshot\.config\.idleMinutes/);
+  assert.match(source, /idleTimeoutMsRef\.current = liteIdleMinutesToMs\(idleMinutes\)/);
+  assert.match(source, /idleTimeoutMs: idleTimeoutMsRef\.current/);
+  // The window is the server's setting, not a per-device copy.
+  assert.doesNotMatch(source, /localStorage|sessionStorage|useLiteIdleMinutes/);
+  // The re-arm path only reschedules and re-evaluates; it never releases or
+  // re-acquires, so changing the setting does not drop a live hold.
+  assert.match(source, /rearmRef\.current = \(\) => \{\s*scheduleIdle\(\);\s*evaluate\(\);\s*\}/);
+  assert.match(source, /useEffect\(\(\) => \{\s*rearmRef\.current\?\.\(\);\s*\}, \[idleMinutes\]\)/);
+  const rearmEffect = source.slice(source.lastIndexOf("useEffect("));
+  assert.doesNotMatch(rearmEffect, /controller\.(hold|release)/);
+});
+
+test("a hidden page keeps holding: the verdict takes no visibility input", () => {
+  const evaluate = source.slice(source.indexOf("const evaluate = () =>"), source.indexOf("const scheduleIdle ="));
+  assert.match(evaluate, /shouldHoldLitePresence\(\{/);
+  assert.match(evaluate, /lastInteractionAt,/);
+  assert.match(evaluate, /now: Date\.now\(\)/);
+  // Hidden-but-recent holds, stale releases — both through the idle deadline
+  // alone, never through the page's visibility.
+  assert.doesNotMatch(evaluate, /visibilityState|visible:/);
+  assert.doesNotMatch(source, /visibilityState/);
+});
+
+test("a visibility change only re-evaluates; it never releases by itself", () => {
+  const visibilityHandler = source.slice(source.indexOf("const onVisibility ="), source.indexOf("const onPageHide ="));
+  assert.match(visibilityHandler, /scheduleIdle\(\);\s*evaluate\(\);/);
+  assert.doesNotMatch(visibilityHandler, /controller\.(release|hold)/);
+});
+
+test("does not dispose the controller on unmount, so Strict Mode remounts survive", () => {
+  // The cleanup must release through the debounced path; an immediate dispose
+  // here would race the effect re-running under Strict Mode.
+  assert.doesNotMatch(source, /controllerRef\.current\?\.dispose\(\)/);
+  const cleanup = source.slice(source.indexOf("return () => {"), source.indexOf("  }, [enabled, sessionId])"));
+  assert.match(cleanup, /controller\.release\(sid\);/);
+  assert.match(cleanup, /onHoldChangeRef\.current\(false, sid\)/);
+});
+
+test("never touches presence when Lite mode is off", () => {
+  assert.match(source, /if \(!enabled \|\| !sessionId \|\| !controller\) return;/);
+});

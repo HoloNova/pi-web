@@ -2,6 +2,7 @@ const SESSION_LIVENESS_PROTOCOL_VERSION = 1;
 export const SESSION_LIVENESS_REGISTRY_KEY = "@agegr/pi-web/session-liveness/v1";
 export const SESSION_LIVENESS_LEASE_TTL_MS = 90_000;
 const SESSION_LIVENESS_LEASES_KEY = "@agegr/pi-web/session-liveness-leases/v1";
+const SESSION_LIVENESS_LISTENERS_KEY = "@agegr/pi-web/session-liveness-listeners/v1";
 
 export interface SessionLivenessProvider {
   name: string;
@@ -31,9 +32,15 @@ interface LeaseRecord extends SessionLivenessLease {
   expiresAt: number;
   released: boolean;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Browser tab/device that owns this lease, when it is client-scoped. */
+  clientId?: string;
+  /** True for a page-presence lease; only these notify reclaim listeners. */
+  presence: boolean;
 }
 
 type LeaseStore = Map<string, Set<LeaseRecord>>;
+
+type SessionPresenceReleaseListener = (sessionId: string, clientId: string) => void;
 
 function assertNonEmptyString(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -123,6 +130,32 @@ function getLeaseStore(): LeaseStore {
   return leases;
 }
 
+// The SSE route and the agent route are bundled into separate module graphs,
+// each with its own copy of this module. Global listeners keep a reclaim
+// request raised on one graph visible to the registry on the other.
+function getPresenceListeners(): Set<SessionPresenceReleaseListener> {
+  const store = globalThis as Record<PropertyKey, unknown>;
+  const key = Symbol.for(SESSION_LIVENESS_LISTENERS_KEY);
+  const existing = store[key];
+  if (existing instanceof Set) return existing as Set<SessionPresenceReleaseListener>;
+  const listeners = new Set<SessionPresenceReleaseListener>();
+  store[key] = listeners;
+  return listeners;
+}
+
+function notifyPresenceReleased(sessionId: string, clientId: string): void {
+  for (const listener of [...getPresenceListeners()]) {
+    try {
+      listener(sessionId, clientId);
+    } catch (error) {
+      console.error(
+        "[pi-web] session presence release listener failed:",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+}
+
 function scheduleLeaseExpiry(lease: LeaseRecord): void {
   if (lease.timer) clearTimeout(lease.timer);
   lease.timer = setTimeout(() => {
@@ -133,11 +166,15 @@ function scheduleLeaseExpiry(lease: LeaseRecord): void {
   unref?.call(lease.timer);
 }
 
-/** Keep one selected browser session alive while its lease is being renewed. */
-export function acquireSessionLivenessLease(sessionId: string): SessionLivenessLease {
+function createLease(
+  sessionId: string,
+  options: { clientId?: string; presence?: boolean } = {},
+): LeaseRecord {
   const leases = getLeaseStore();
+  const presence = options.presence ?? false;
+  const clientId = options.clientId;
   const providerRelease = registerSessionLivenessProvider({
-    name: "pi-web-selected-session",
+    name: presence ? "pi-web-selected-presence" : "pi-web-selected-session",
     sessionId,
     isActive: () => !lease.released && lease.expiresAt > Date.now(),
   });
@@ -149,6 +186,7 @@ export function acquireSessionLivenessLease(sessionId: string): SessionLivenessL
     const sessionLeases = leases.get(sessionId);
     sessionLeases?.delete(lease);
     if (sessionLeases?.size === 0) leases.delete(sessionId);
+    if (presence) notifyPresenceReleased(sessionId, clientId ?? "");
   };
   const renew = () => {
     if (lease.released) return;
@@ -160,6 +198,8 @@ export function acquireSessionLivenessLease(sessionId: string): SessionLivenessL
     expiresAt: Date.now() + SESSION_LIVENESS_LEASE_TTL_MS,
     released: false,
     timer: null,
+    presence,
+    ...(clientId !== undefined ? { clientId } : {}),
     renew,
     release,
   };
@@ -170,12 +210,25 @@ export function acquireSessionLivenessLease(sessionId: string): SessionLivenessL
   return lease;
 }
 
-/** Renew every live browser lease for a session; expired leases are ignored. */
-export function renewSessionLivenessLeases(sessionId: string): number {
+/** Keep one selected browser session alive while its lease is being renewed. */
+export function acquireSessionLivenessLease(
+  sessionId: string,
+  options: { clientId?: string } = {},
+): SessionLivenessLease {
+  return createLease(sessionId, { ...(options.clientId !== undefined ? { clientId: options.clientId } : {}) });
+}
+
+/**
+ * Renew every live browser lease for a session; expired leases are ignored.
+ * A clientId renews only that page's leases, so one page cannot keep another
+ * page's presence alive.
+ */
+export function renewSessionLivenessLeases(sessionId: string, clientId?: string): number {
   const leases = getLeaseStore().get(sessionId);
   if (!leases) return 0;
   let renewed = 0;
   for (const lease of [...leases]) {
+    if (clientId !== undefined && lease.clientId !== clientId) continue;
     if (lease.released || lease.expiresAt <= Date.now()) {
       lease.release();
       continue;
@@ -184,6 +237,62 @@ export function renewSessionLivenessLeases(sessionId: string): number {
     renewed += 1;
   }
   return renewed;
+}
+
+/**
+ * Register or refresh this page's presence for a session. Presence is what makes
+ * the server treat a session as actively viewed; it is deliberately separate
+ * from the SSE connection lease so a reconnect blip cannot drop the viewer.
+ */
+export function acquireSessionPresence(sessionId: string, clientId: string): void {
+  assertNonEmptyString(sessionId, "sessionId");
+  assertNonEmptyString(clientId, "clientId");
+  const leases = getLeaseStore().get(sessionId);
+  if (leases) {
+    for (const lease of [...leases]) {
+      if (lease.presence && lease.clientId === clientId && !lease.released) {
+        lease.renew();
+        return;
+      }
+    }
+  }
+  createLease(sessionId, { clientId, presence: true });
+}
+
+/**
+ * Drop this page's presence and every lease it owns (the SSE connection lease
+ * included) in one step; the presence release then lets reclaim listeners
+ * decide whether the wrapper can close. Idempotent: a second release for an
+ * already-released page notifies nobody.
+ */
+export function releaseSessionPresence(sessionId: string, clientId: string): void {
+  const leases = getLeaseStore().get(sessionId);
+  if (!leases) return;
+  for (const lease of [...leases]) {
+    if (lease.clientId === clientId) lease.release();
+  }
+}
+
+export function hasActiveSessionPresence(sessionId: string): boolean {
+  const leases = getLeaseStore().get(sessionId);
+  if (!leases) return false;
+  for (const lease of leases) {
+    if (lease.presence && !lease.released && lease.expiresAt > Date.now()) return true;
+  }
+  return false;
+}
+
+/**
+ * Observe page-presence releases and lease-expiry fallbacks. The listener runs
+ * after the lease is gone, so it can decide whether an idle session wrapper now
+ * has no viewer left.
+ */
+export function onSessionPresenceReleased(listener: SessionPresenceReleaseListener): () => void {
+  const listeners = getPresenceListeners();
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 /**

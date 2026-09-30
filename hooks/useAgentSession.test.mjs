@@ -369,7 +369,8 @@ test("keeps the selected session warm while idle and renews its lease", () => {
   );
   assert.match(source, /sessionPropIdRef\.current === sid/);
   assert.match(source, /SESSION_LEASE_RENEW_INTERVAL_MS = 30_000/);
-  assert.match(source, /fetch\(`\/api\/agent\/\$\{encodeURIComponent\(sid\)\}\/lease`/);
+  // The renewal carries this page's id, so it renews only its own leases.
+  assert.match(source, /\/lease\?client=\$\{encodeURIComponent\(getClientId\(\)\)\}/);
   assert.match(source, /setInterval\(\(\) => void renewLease\(\), SESSION_LEASE_RENEW_INTERVAL_MS\)/);
   assert.match(source, /result\.renewed === 0[\s\S]*?closeEvents\(\)[\s\S]*?maintainEventsConnected\(sid\)/);
   assert.match(source, /if \(sessionPropIdRef\.current === sid\) \{[\s\S]*?cancelEventStreamGrace\(\);[\s\S]*?return;/);
@@ -657,6 +658,27 @@ test("keeps a detached viewport in place when streaming completes", () => {
   assert.match(scrollEffectSource, /!agentRunningRef\.current && isNearBottomRef\.current[\s\S]*?scrollToBottom\("auto"\)/);
   assert.doesNotMatch(scrollEffectSource, /\|\|/);
   assert.match(source, /addEventListener\("scroll", handleScrollPositionChange/);
+});
+
+test("Lite mode holds a per-page presence and closes its own stream when dormant", () => {
+  const liteSource = source.slice(
+    source.indexOf("const handleLiteHoldChange"),
+    source.indexOf("// Turning Lite off must restore normal-mode warmth"),
+  );
+  assert.match(source, /const \[liteModeEnabled\] = useLiteMode\(\)/);
+  assert.match(source, /useLiteSessionLifecycle\(\{/);
+  assert.match(source, /sessionId: session\?\.id \?\? null/);
+  assert.match(liteSource, /if \(hold\) \{[\s\S]*?closeEvents\(\);[\s\S]*?maintainEventsConnected\(sid\);/);
+  assert.match(liteSource, /else if \(liteModeEnabledRef\.current\) \{\s*closeEvents\(\);/);
+  // A dormant Lite page must not keep renewing (and so keep alive) its leases.
+  assert.match(source, /if \(liteModeEnabledRef\.current && !liteHoldRef\.current\) return;/);
+  // Normal mode is never gated: both the lease renewal and shouldMaintain only
+  // change behaviour while Lite is on.
+  assert.match(source, /&& \(!liteModeEnabledRef\.current \|\| liteHoldRef\.current\)/);
+  // The SSE connection and the lease renewal carry this page's id, so its own
+  // leases can be released without touching another page's.
+  assert.match(source, /\/events\?client=\$\{encodeURIComponent\(getClientId\(\)\)\}/);
+  assert.match(source, /\/lease\?client=\$\{encodeURIComponent\(getClientId\(\)\)\}/);
 });
 
 test("auto-compact slash command toggles session auto-compaction", () => {

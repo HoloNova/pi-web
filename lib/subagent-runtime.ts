@@ -30,7 +30,7 @@ import {
   type SubagentResultMetadata,
   type SubagentRunInfo,
 } from "./subagents";
-import type { SessionEntry } from "./types";
+import type { SessionEntry, SubagentSessionStatus } from "./types";
 import { buildSubagentPromptPlan } from "./subagent-prompt";
 import { createExactSystemPromptExtension } from "./exact-system-prompt";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
@@ -98,9 +98,35 @@ function lastAssistantError(sessionManager: { getEntries?: () => unknown }): str
   return undefined;
 }
 
+/**
+ * Run states that mean the child is still working: it was accepted and has not
+ * reported a terminal result yet. Anything not listed here is finished or
+ * interrupted, so it holds no session open.
+ */
+export const ACTIVE_SUBAGENT_STATUSES: ReadonlySet<SubagentSessionStatus> = new Set([
+  "starting",
+  "queued",
+  "running",
+]);
+
 function getSubagentRuns(): Map<string, StoredSubagentExecution> {
   if (!globalThis.__piSubagentRuns) globalThis.__piSubagentRuns = new Map();
   return globalThis.__piSubagentRuns;
+}
+
+/**
+ * True while a built-in subagent run started from this parent session is still
+ * starting, queued or running. The reclaim paths ask this before closing a
+ * wrapper: a parent turn that has already returned still owns a child that is
+ * executing inside the same process, so closing the wrapper would kill it.
+ */
+export function hasActiveSubagentRunForParent(parentSessionId: string): boolean {
+  if (!parentSessionId) return false;
+  for (const stored of getSubagentRuns().values()) {
+    if (stored.run.parentSessionId !== parentSessionId) continue;
+    if (ACTIVE_SUBAGENT_STATUSES.has(stored.run.status)) return true;
+  }
+  return false;
 }
 
 function getSubagentQueue(): SubagentQueue<SubagentRunInfo> {

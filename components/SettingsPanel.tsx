@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useLiteConfig } from "@/hooks/useLiteConfig";
 import { useTheme } from "@/hooks/useTheme";
 import { THEME_OPTIONS } from "@/lib/theme";
 import { ThemeIcon } from "./ThemeIcon";
@@ -66,6 +67,8 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
+  const { snapshot: liteSnapshot, save: saveLiteConfig } = useLiteConfig();
+  const [idleMinutesDraft, setIdleMinutesDraft] = useState(() => String(liteSnapshot.config.idleMinutes));
   const [shellSettings, setShellSettings] = useState<ShellToolSettingsResponse | null>(null);
   const [shellSaving, setShellSaving] = useState(false);
   const [shellError, setShellError] = useState<string | null>(null);
@@ -75,6 +78,12 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   const [webAuthEnabled, setWebAuthEnabled] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState("");
+
+  // The stored value is what the field falls back to: a refused save leaves the
+  // server's number in place, and another device's change arrives here too.
+  useEffect(() => {
+    setIdleMinutesDraft(String(liteSnapshot.config.idleMinutes));
+  }, [liteSnapshot.config.idleMinutes]);
 
   useEffect(() => {
     setThinkingExpanded(isThinkingExpandedByDefault());
@@ -284,6 +293,49 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           {shellError && <p role="alert" className="settings-general-error">{shellError}</p>}
         </section>
       )}
+
+      <section className="settings-general-section">
+        <h3 className="settings-general-heading">{t("settings.sessionLifetime")}</h3>
+        <p className="settings-general-description">{t("settings.sessionLifetimeDescription")}</p>
+        <div className="settings-shell-option">
+          <span>{t("settings.liteMode")}</span>
+          <ConfigSwitch
+            checked={liteSnapshot.config.enabled}
+            loading={liteSnapshot.saving || !liteSnapshot.loaded}
+            label={t("settings.liteMode")}
+            onChange={(enabled) => void saveLiteConfig({ enabled })}
+          />
+        </div>
+        <p className="settings-general-description">{t("settings.liteModeDescription")}</p>
+        {liteSnapshot.config.enabled && (
+          <>
+            <div className="settings-shell-option settings-idle-minutes">
+              <label htmlFor="settings-lite-idle-minutes">{t("settings.liteIdleMinutes")}</label>
+              <input
+                id="settings-lite-idle-minutes"
+                type="number"
+                inputMode="numeric"
+                min={liteSnapshot.bounds.idleMinutes.min}
+                max={liteSnapshot.bounds.idleMinutes.max}
+                step={1}
+                value={idleMinutesDraft}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setIdleMinutesDraft(raw);
+                  const minutes = Number(raw);
+                  if (!Number.isInteger(minutes)) return;
+                  if (minutes < liteSnapshot.bounds.idleMinutes.min || minutes > liteSnapshot.bounds.idleMinutes.max) return;
+                  if (minutes === liteSnapshot.config.idleMinutes) return;
+                  void saveLiteConfig({ idleMinutes: minutes });
+                }}
+                onBlur={() => setIdleMinutesDraft(String(liteSnapshot.config.idleMinutes))}
+              />
+            </div>
+            <p className="settings-general-description">{t("settings.liteIdleMinutesDescription")}</p>
+          </>
+        )}
+        {liteSnapshot.error && <p role="alert" className="settings-general-error">{liteSnapshot.error}</p>}
+      </section>
 
       <section className="settings-general-section">
         <h3 className="settings-general-heading">{t("settings.pushPermission")}</h3>
