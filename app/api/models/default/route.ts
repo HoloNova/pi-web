@@ -1,6 +1,6 @@
 import { stat } from "fs/promises";
 import { resolve } from "path";
-import { createAgentSessionServices, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
   isThinkingLevel,
   projectSettingsPath,
@@ -9,6 +9,7 @@ import {
   type DefaultPreferencesEdit,
 } from "@/lib/default-preferences";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { withExtensionServices } from "@/lib/model-runtime";
 import { resolveVisibleModels } from "@/lib/model-scope";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
@@ -74,40 +75,44 @@ export async function PUT(req: Request) {
   try {
     const agentDir = getAgentDir();
     const trustReloadOptions = projectTrustReloadOptions(cwd, agentDir);
-    const services = await createAgentSessionServices({
-      cwd,
-      agentDir,
-      ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
-    });
-    const { settingsManager } = services;
+    // Loading these services imports and runs every configured extension, so the
+    // wrapper closes the session that releases them when this request is done.
+    return await withExtensionServices(
+      {
+        cwd,
+        agentDir,
+        ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
+      },
+      async ({ modelRuntime, settingsManager }) => {
 
-    const shadowed = shadowingProjectKeys(settingsManager, edit);
-    if (shadowed.length > 0) {
-      const settingsPath = projectSettingsPath(cwd);
-      return Response.json({
-        error: `${settingsPath} sets ${shadowed.join(", ")} for this project, so a global default would not apply here.`,
-        reason: "project-scope",
-        settingsPath,
-        keys: shadowed,
-      }, { status: 409 });
-    }
-
-    if (edit.model) {
-      // Only a model the selector can offer is a default that actually takes
-      // effect: startup falls back to the first scoped model otherwise.
-      const scope = await resolveVisibleModels(services.modelRuntime, settingsManager.getEnabledModels());
-      const { provider, modelId } = edit.model;
-      if (!scope.visible.some((model) => model.provider === provider && model.id === modelId)) {
-        return Response.json({ error: `Model not available: ${provider}/${modelId}` }, { status: 404 });
+      const shadowed = shadowingProjectKeys(settingsManager, edit);
+      if (shadowed.length > 0) {
+        const settingsPath = projectSettingsPath(cwd);
+        return Response.json({
+          error: `${settingsPath} sets ${shadowed.join(", ")} for this project, so a global default would not apply here.`,
+          reason: "project-scope",
+          settingsPath,
+          keys: shadowed,
+        }, { status: 409 });
       }
-    }
 
-    await writeDefaultPreferences(settingsManager, edit);
-    invalidateModelsCache();
-    return Response.json({
-      ok: true,
-      ...(edit.model ? { defaultModel: edit.model } : {}),
-      ...(edit.thinkingLevel ? { defaultThinkingLevel: edit.thinkingLevel } : {}),
+      if (edit.model) {
+        // Only a model the selector can offer is a default that actually takes
+        // effect: startup falls back to the first scoped model otherwise.
+        const scope = await resolveVisibleModels(modelRuntime, settingsManager.getEnabledModels());
+        const { provider, modelId } = edit.model;
+        if (!scope.visible.some((model) => model.provider === provider && model.id === modelId)) {
+          return Response.json({ error: `Model not available: ${provider}/${modelId}` }, { status: 404 });
+        }
+      }
+
+      await writeDefaultPreferences(settingsManager, edit);
+      invalidateModelsCache();
+      return Response.json({
+        ok: true,
+        ...(edit.model ? { defaultModel: edit.model } : {}),
+        ...(edit.thinkingLevel ? { defaultThinkingLevel: edit.thinkingLevel } : {}),
+      });
     });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });

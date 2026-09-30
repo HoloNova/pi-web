@@ -1,7 +1,8 @@
 import { stat } from "fs/promises";
 import { resolve } from "path";
-import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { withExtensionServices } from "@/lib/model-runtime";
 import {
   loadModelsWithCache,
   withModelRuntimeError,
@@ -37,63 +38,69 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   // runs a repository's .pi/extensions factories, so honor project trust here
   // too (see lib/project-trust.ts, #236).
   const trustReloadOptions = projectTrustReloadOptions(cwd, agentDir);
-  const services = await createAgentSessionServices({
-    cwd,
-    agentDir,
-    ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
-  });
-  const modelError = services.modelRuntime.getError();
-  const settings: SettingsManager = services.settingsManager;
-  // `enabledModels` supports globs and fuzzy patterns, so resolve it the same
-  // way the CLI does instead of comparing pattern strings literally (#307).
-  const scope = await resolveVisibleModels(
-    services.modelRuntime,
-    settings.getEnabledModels(),
-  );
-  const { visible, thinkingLevelPins, warnings } = scope;
-  modelList = visible.map((m) => ({
-    id: m.id,
-    name: m.name,
-    provider: m.provider,
-    input: m.input,
-  })).sort(compareModelEntries);
-  for (const m of visible) {
-    const key = `${m.provider}:${m.id}`;
-    nameMap.set(key, m.name);
-    thinkingLevels[key] = getSupportedThinkingLevels(m);
-    if (m.thinkingLevelMap) thinkingLevelMaps[key] = m.thinkingLevelMap;
-  }
-
-  const defaultProvider = settings.getDefaultProvider();
-  const defaultModelId = settings.getDefaultModel();
-  const initial = selectInitialModelScope(scope, {
-    ...(defaultProvider && defaultModelId
-      ? { defaultModel: { provider: defaultProvider, modelId: defaultModelId } }
-      : {}),
-  });
-  if (initial.model) {
-    defaultModel = { provider: initial.model.provider, modelId: initial.model.id };
-  }
-  const defaultThinkingLevel = initial.thinkingLevel
-    ?? (initial.model
-      ? settings.getModelThinkingLevel(initial.model.provider, initial.model.id)
-      : undefined)
-    ?? settings.getDefaultThinkingLevel()
-    ?? null;
-
-  return withModelRuntimeError(
+  // Loading these services imports and runs every configured extension, so
+  // the wrapper closes the session that releases them when the load is done.
+  return withExtensionServices(
     {
-      models: Object.fromEntries(nameMap),
-      modelList,
-      defaultModel,
-      defaultThinkingLevel,
-      savedDefaultThinkingLevel: settings.getDefaultThinkingLevel() ?? null,
-      thinkingLevels,
-      thinkingLevelMaps,
-      thinkingLevelPins,
-      ...(warnings.length > 0 ? { modelScopeWarnings: warnings } : {}),
+      cwd,
+      agentDir,
+      ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
     },
-    modelError,
+    async (services) => {
+      const modelError = services.modelRuntime.getError();
+      const settings: SettingsManager = services.settingsManager;
+      // `enabledModels` supports globs and fuzzy patterns, so resolve it the same
+      // way the CLI does instead of comparing pattern strings literally (#307).
+      const scope = await resolveVisibleModels(
+        services.modelRuntime,
+        settings.getEnabledModels(),
+      );
+      const { visible, thinkingLevelPins, warnings } = scope;
+      modelList = visible.map((m) => ({
+        id: m.id,
+        name: m.name,
+        provider: m.provider,
+        input: m.input,
+      })).sort(compareModelEntries);
+      for (const m of visible) {
+        const key = `${m.provider}:${m.id}`;
+        nameMap.set(key, m.name);
+        thinkingLevels[key] = getSupportedThinkingLevels(m);
+        if (m.thinkingLevelMap) thinkingLevelMaps[key] = m.thinkingLevelMap;
+      }
+
+      const defaultProvider = settings.getDefaultProvider();
+      const defaultModelId = settings.getDefaultModel();
+      const initial = selectInitialModelScope(scope, {
+        ...(defaultProvider && defaultModelId
+          ? { defaultModel: { provider: defaultProvider, modelId: defaultModelId } }
+          : {}),
+      });
+      if (initial.model) {
+        defaultModel = { provider: initial.model.provider, modelId: initial.model.id };
+      }
+      const defaultThinkingLevel = initial.thinkingLevel
+        ?? (initial.model
+          ? settings.getModelThinkingLevel(initial.model.provider, initial.model.id)
+          : undefined)
+        ?? settings.getDefaultThinkingLevel()
+        ?? null;
+
+      return withModelRuntimeError(
+        {
+          models: Object.fromEntries(nameMap),
+          modelList,
+          defaultModel,
+          defaultThinkingLevel,
+          savedDefaultThinkingLevel: settings.getDefaultThinkingLevel() ?? null,
+          thinkingLevels,
+          thinkingLevelMaps,
+          thinkingLevelPins,
+          ...(warnings.length > 0 ? { modelScopeWarnings: warnings } : {}),
+        },
+        modelError,
+      );
+    },
   );
 }
 

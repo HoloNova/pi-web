@@ -22,7 +22,7 @@ import {
   type EnabledModelsView,
 } from "@/lib/enabled-models-runtime";
 import type { EnabledModelsInput } from "@/lib/enabled-models";
-import { createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { withExtensionRuntime } from "@/lib/model-runtime";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateModelsCache } from "@/lib/models-cache";
 
@@ -36,8 +36,12 @@ interface RequestContext {
   paths: { cwd: string; agentDir: string };
 }
 
-async function loadContext(cwd: string): Promise<RequestContext> {
-  const modelRuntime = await createModelRuntimeWithExtensions();
+/**
+ * `modelRuntime` comes from the caller: building one loads every configured
+ * extension (they register providers), and it must stay valid for the whole
+ * request, so the request body runs inside the wrapper that releases them.
+ */
+async function loadContext(cwd: string, modelRuntime: ModelRuntime): Promise<RequestContext> {
   const agentDir = getAgentDir();
   return {
     modelRuntime,
@@ -94,7 +98,9 @@ export async function GET(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    return Response.json(await buildView(await loadContext(resolved.cwd)));
+    return await withExtensionRuntime(async (modelRuntime) => {
+      return Response.json(await buildView(await loadContext(resolved.cwd, modelRuntime)));
+    });
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }
@@ -202,60 +208,62 @@ export async function PUT(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    const context = await loadContext(resolved.cwd);
+    return await withExtensionRuntime(async (modelRuntime) => {
+      const context = await loadContext(resolved.cwd, modelRuntime);
     const { patterns, scope } = readEnabledModelsSettings(context.settingsManager, context.paths);
-    if (scope === "project") {
-      return Response.json(
-        { error: "Project settings override enabledModels", reason: "project-scope" },
-        { status: 409 },
-      );
-    }
-
-    const input = await buildEnabledModelsInput(patterns, context.models, { withProviderGlobs: true });
-    let edit;
-    if (op === "clear") {
-      edit = clearEnabledModels(input);
-    } else if (op === "prune") {
-      edit = pruneStaleEnabledModels(input);
-    } else if (op === "resync") {
-      const renames = renamePairs(body.renames);
-      const modelRenames = renamePairs(body.modelRenames ?? []);
-      const fullyEnabled = stringArray(body.fullyEnabled ?? []);
-      if (!renames || !modelRenames || !fullyEnabled) {
-        return Response.json({ error: "Invalid resync payload" }, { status: 400 });
+      if (scope === "project") {
+        return Response.json(
+          { error: "Project settings override enabledModels", reason: "project-scope" },
+          { status: 409 },
+        );
       }
-      edit = await resyncAfterModelsConfigSave(context, input, { renames, modelRenames, fullyEnabled });
-    } else {
-      let refs: string[];
-      if (op === "provider") {
-        if (typeof body.provider !== "string" || !body.provider) {
-          return Response.json({ error: "provider is required" }, { status: 400 });
+
+      const input = await buildEnabledModelsInput(patterns, context.models, { withProviderGlobs: true });
+      let edit;
+      if (op === "clear") {
+        edit = clearEnabledModels(input);
+      } else if (op === "prune") {
+        edit = pruneStaleEnabledModels(input);
+      } else if (op === "resync") {
+        const renames = renamePairs(body.renames);
+        const modelRenames = renamePairs(body.modelRenames ?? []);
+        const fullyEnabled = stringArray(body.fullyEnabled ?? []);
+        if (!renames || !modelRenames || !fullyEnabled) {
+          return Response.json({ error: "Invalid resync payload" }, { status: 400 });
         }
-        // Resolved server-side so a provider switched on stays on for models
-        // the browser has not seen yet.
-        refs = context.models
-          .filter((model) => model.provider === body.provider)
-          .map(modelRef);
+        edit = await resyncAfterModelsConfigSave(context, input, { renames, modelRenames, fullyEnabled });
       } else {
-        const requested = stringArray(body.refs);
-        if (!requested) return Response.json({ error: "refs must be an array of strings" }, { status: 400 });
-        refs = requested;
+        let refs: string[];
+        if (op === "provider") {
+          if (typeof body.provider !== "string" || !body.provider) {
+            return Response.json({ error: "provider is required" }, { status: 400 });
+          }
+          // Resolved server-side so a provider switched on stays on for models
+          // the browser has not seen yet.
+          refs = context.models
+            .filter((model) => model.provider === body.provider)
+            .map(modelRef);
+        } else {
+          const requested = stringArray(body.refs);
+          if (!requested) return Response.json({ error: "refs must be an array of strings" }, { status: 400 });
+          refs = requested;
+        }
+        edit = setModelsEnabled(input, refs, body.enabled === true);
       }
-      edit = setModelsEnabled(input, refs, body.enabled === true);
-    }
 
-    if (!edit.ok) {
-      return Response.json(
-        { error: "At least one model must stay enabled", reason: edit.reason },
-        { status: 409 },
-      );
-    }
-    if (edit.changed) {
-      await writeEnabledModels(context.settingsManager, edit.patterns);
-      invalidateModelsCache();
-    }
+      if (!edit.ok) {
+        return Response.json(
+          { error: "At least one model must stay enabled", reason: edit.reason },
+          { status: 409 },
+        );
+      }
+      if (edit.changed) {
+        await writeEnabledModels(context.settingsManager, edit.patterns);
+        invalidateModelsCache();
+      }
 
-    return Response.json(await buildView(context));
+      return Response.json(await buildView(context));
+    });
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }
