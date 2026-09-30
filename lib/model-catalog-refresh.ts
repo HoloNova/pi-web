@@ -1,5 +1,4 @@
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { withExtensionRuntime } from "@/lib/model-runtime";
 import { invalidateModelsCache } from "@/lib/models-cache";
 
 /**
@@ -89,31 +88,34 @@ export async function refreshModelCatalogs(
   const timeout = AbortSignal.timeout(CATALOG_REFRESH_TIMEOUT_MS);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
 
-  let runtime: ModelRuntime;
+  let completed = false;
+  let changed = false;
   try {
-    runtime = await createModelRuntimeWithExtensions();
+    // `createAgentSessionServices()` has already restored the stored overlay, so
+    // the list read below is exactly what the panel is showing right now — and
+    // the wrapper releases the extensions its creation loaded when the pass is
+    // done instead of leaving them for the life of the server process.
+    changed = await withExtensionRuntime(async (runtime) => {
+      const before = modelCatalogSignature(runtime.getModels());
+      try {
+        const result = await runtime.refresh({
+          ...(options.providers ? { providers: options.providers } : {}),
+          force: true,
+          signal,
+        });
+        completed = !result.aborted && result.errors.size === 0;
+      } catch {
+        completed = false;
+      }
+
+      // A pass that failed for one provider can still have persisted another's
+      // catalog, so compare regardless of the outcome.
+      return modelCatalogSignature(runtime.getModels()) !== before;
+    });
   } catch {
     return { completed: false, changed: false, reason: "runtime" };
   }
 
-  // `createAgentSessionServices()` has already restored the stored overlay, so
-  // this is exactly the list the panel is showing right now.
-  const before = modelCatalogSignature(runtime.getModels());
-  let completed = false;
-  try {
-    const result = await runtime.refresh({
-      ...(options.providers ? { providers: options.providers } : {}),
-      force: true,
-      signal,
-    });
-    completed = !result.aborted && result.errors.size === 0;
-  } catch {
-    completed = false;
-  }
-
-  // A pass that failed for one provider can still have persisted another's
-  // catalog, so compare regardless of the outcome.
-  const changed = modelCatalogSignature(runtime.getModels()) !== before;
   if (changed) invalidateModelsCache();
   return { completed, changed };
 }

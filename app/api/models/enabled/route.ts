@@ -22,7 +22,7 @@ import {
   type EnabledModelsView,
 } from "@/lib/enabled-models-runtime";
 import type { EnabledModelsInput } from "@/lib/enabled-models";
-import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { withCatalogRuntime, withExtensionRuntime } from "@/lib/model-runtime";
 import { readsUseLiteCatalog } from "@/lib/lite-config-settings";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { invalidateModelsCache } from "@/lib/models-cache";
@@ -38,17 +38,11 @@ interface RequestContext {
 }
 
 /**
- * `lite` picks the runtime that *describes* the catalog. It must be false for
- * anything that decides a write: a Lite runtime has no extension-registered
- * providers, so `prune` would delete their entries and a first toggle would
- * materialize a scope that leaves their models out (see
- * `lib/enabled-models.ts`). Reads may describe the Lite catalog so the panel
- * matches what a Lite instance can actually select.
+ * `modelRuntime` comes from the caller: building one loads every configured
+ * extension (they register providers), and it must stay valid for the whole
+ * request, so the request body runs inside the wrapper that releases them.
  */
-async function loadContext(cwd: string, lite: boolean): Promise<RequestContext> {
-  const modelRuntime = lite
-    ? await createLiteModelRuntime()
-    : await createModelRuntimeWithExtensions();
+async function loadContext(cwd: string, modelRuntime: ModelRuntime): Promise<RequestContext> {
   const agentDir = getAgentDir();
   return {
     modelRuntime,
@@ -105,7 +99,11 @@ export async function GET(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    return Response.json(await buildView(await loadContext(resolved.cwd, readsUseLiteCatalog())));
+    // The view describes the catalogue this instance's reads answer from, so a
+    // Lite panel matches what its sessions can actually select.
+    return await withCatalogRuntime(async (modelRuntime) => {
+      return Response.json(await buildView(await loadContext(resolved.cwd, modelRuntime)));
+    });
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }
@@ -213,67 +211,71 @@ export async function PUT(req: Request) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    // Every edit resolves against the full catalog, whatever the instance mode:
-    // this path performs minimal edits plus resync/prune, and a Lite catalog
-    // cannot tell a genuinely stale entry from one whose provider an extension
-    // registers. Only the returned view follows the mode, so a Lite panel keeps
-    // describing the Lite catalog.
-    const lite = readsUseLiteCatalog();
-    const context = await loadContext(resolved.cwd, false);
-    const { patterns, scope } = readEnabledModelsSettings(context.settingsManager, context.paths);
-    if (scope === "project") {
-      return Response.json(
-        { error: "Project settings override enabledModels", reason: "project-scope" },
-        { status: 409 },
-      );
-    }
-
-    const input = await buildEnabledModelsInput(patterns, context.models, { withProviderGlobs: true });
-    let edit;
-    if (op === "clear") {
-      edit = clearEnabledModels(input);
-    } else if (op === "prune") {
-      edit = pruneStaleEnabledModels(input);
-    } else if (op === "resync") {
-      const renames = renamePairs(body.renames);
-      const modelRenames = renamePairs(body.modelRenames ?? []);
-      const fullyEnabled = stringArray(body.fullyEnabled ?? []);
-      if (!renames || !modelRenames || !fullyEnabled) {
-        return Response.json({ error: "Invalid resync payload" }, { status: 400 });
+    // Every edit resolves against the full catalogue, whatever the instance
+    // mode: this path performs minimal edits plus resync/prune, and a Lite
+    // catalogue cannot tell a genuinely stale entry from one whose provider an
+    // extension registers — pruning against it would drop that provider's
+    // models. Only the returned view follows the mode.
+    return await withExtensionRuntime(async (modelRuntime) => {
+      const context = await loadContext(resolved.cwd, modelRuntime);
+      const { patterns, scope } = readEnabledModelsSettings(context.settingsManager, context.paths);
+      if (scope === "project") {
+        return Response.json(
+          { error: "Project settings override enabledModels", reason: "project-scope" },
+          { status: 409 },
+        );
       }
-      edit = await resyncAfterModelsConfigSave(context, input, { renames, modelRenames, fullyEnabled });
-    } else {
-      let refs: string[];
-      if (op === "provider") {
-        if (typeof body.provider !== "string" || !body.provider) {
-          return Response.json({ error: "provider is required" }, { status: 400 });
+
+      const input = await buildEnabledModelsInput(patterns, context.models, { withProviderGlobs: true });
+      let edit;
+      if (op === "clear") {
+        edit = clearEnabledModels(input);
+      } else if (op === "prune") {
+        edit = pruneStaleEnabledModels(input);
+      } else if (op === "resync") {
+        const renames = renamePairs(body.renames);
+        const modelRenames = renamePairs(body.modelRenames ?? []);
+        const fullyEnabled = stringArray(body.fullyEnabled ?? []);
+        if (!renames || !modelRenames || !fullyEnabled) {
+          return Response.json({ error: "Invalid resync payload" }, { status: 400 });
         }
-        // Resolved server-side so a provider switched on stays on for models
-        // the browser has not seen yet.
-        refs = context.models
-          .filter((model) => model.provider === body.provider)
-          .map(modelRef);
+        edit = await resyncAfterModelsConfigSave(context, input, { renames, modelRenames, fullyEnabled });
       } else {
-        const requested = stringArray(body.refs);
-        if (!requested) return Response.json({ error: "refs must be an array of strings" }, { status: 400 });
-        refs = requested;
+        let refs: string[];
+        if (op === "provider") {
+          if (typeof body.provider !== "string" || !body.provider) {
+            return Response.json({ error: "provider is required" }, { status: 400 });
+          }
+          // Resolved server-side so a provider switched on stays on for models
+          // the browser has not seen yet.
+          refs = context.models
+            .filter((model) => model.provider === body.provider)
+            .map(modelRef);
+        } else {
+          const requested = stringArray(body.refs);
+          if (!requested) return Response.json({ error: "refs must be an array of strings" }, { status: 400 });
+          refs = requested;
+        }
+        edit = setModelsEnabled(input, refs, body.enabled === true);
       }
-      edit = setModelsEnabled(input, refs, body.enabled === true);
-    }
 
-    if (!edit.ok) {
-      return Response.json(
-        { error: "At least one model must stay enabled", reason: edit.reason },
-        { status: 409 },
-      );
-    }
-    if (edit.changed) {
-      await writeEnabledModels(context.settingsManager, edit.patterns);
-      invalidateModelsCache();
-    }
+      if (!edit.ok) {
+        return Response.json(
+          { error: "At least one model must stay enabled", reason: edit.reason },
+          { status: 409 },
+        );
+      }
+      if (edit.changed) {
+        await writeEnabledModels(context.settingsManager, edit.patterns);
+        invalidateModelsCache();
+      }
 
-    const viewContext = lite ? await loadContext(resolved.cwd, true) : context;
-    return Response.json(await buildView(viewContext));
+      // The view still describes what this instance's reads answer from, so a
+      // Lite panel does not start showing providers its sessions cannot select.
+      if (!readsUseLiteCatalog()) return Response.json(await buildView(context));
+      return await withCatalogRuntime(async (viewRuntime) =>
+        Response.json(await buildView(await loadContext(resolved.cwd, viewRuntime))));
+    });
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 });
   }

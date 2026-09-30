@@ -126,15 +126,15 @@ test("the model reads pick their runtime from the instance setting", async () =>
 
   // Lite reads never import the extension set; normal reads still do.
   assert.match(modelsRoute, /const lite = readsUseLiteCatalog\(\)/);
-  assert.match(modelsRoute, /modelRuntime = await createLiteModelRuntime\(\)/);
-  assert.match(modelsRoute, /modelRuntime = services\.modelRuntime/);
-  assert.match(modelsRoute, /const services = await createAgentSessionServices\(/);
+  assert.match(modelsRoute, /read\(await createLiteModelRuntime\(\), SettingsManager\.create\(cwd, agentDir\)\)/);
+  assert.match(modelsRoute, /withExtensionServices\(/);
   // The cache key carries the mode, so a Lite load cannot serve a normal read.
   assert.match(modelsRoute, /modelsCacheKey\(cwd, lite\)/);
 
-  assert.match(providersRoute, /readsUseLiteCatalog\(\)/);
-  assert.match(providersRoute, /await createLiteModelRuntime\(\)/);
-  assert.match(providersRoute, /await createModelRuntimeWithExtensions\(\)/);
+  // The runtime choice itself lives in lib/model-runtime.ts now, so the routes
+  // ask for the catalogue instead of naming the setting.
+  assert.match(providersRoute, /withCatalogRuntime\(/);
+  assert.doesNotMatch(providersRoute, /createLiteModelRuntime\(|createModelRuntimeWithExtensions\(/);
 });
 
 test("the enabledModels write path always resolves against the full catalog", async () => {
@@ -142,13 +142,13 @@ test("the enabledModels write path always resolves against the full catalog", as
   const put = source.slice(source.indexOf("export async function PUT"));
 
   // GET describes the instance's catalog; PUT never does.
-  assert.match(source, /buildView\(await loadContext\(resolved\.cwd, readsUseLiteCatalog\(\)\)\)/);
-  assert.match(put, /const lite = readsUseLiteCatalog\(\)/);
-  assert.match(put, /const context = await loadContext\(resolved\.cwd, false\)/);
+  assert.match(source, /withCatalogRuntime\(async \(modelRuntime\) => \{\s*\n\s+return Response\.json\(await buildView\(await loadContext\(resolved\.cwd, modelRuntime\)\)\);/);
+  assert.match(put, /if \(!readsUseLiteCatalog\(\)\) return Response\.json\(await buildView\(context\)\)/);
+  assert.match(put, /withExtensionRuntime\(async \(modelRuntime\) => \{\s*\n\s+const context = await loadContext\(resolved\.cwd, modelRuntime\)/);
   // The edit is computed from that full context; only the returned view follows
   // the mode, so a Lite panel keeps describing the Lite catalog.
-  assert.match(put, /const viewContext = lite \? await loadContext\(resolved\.cwd, true\) : context/);
-  assert.doesNotMatch(put, /loadContext\(resolved\.cwd, readsUseLiteCatalog\(\)\)/);
+  assert.match(put, /return await withCatalogRuntime\(async \(viewRuntime\) =>/);
+  assert.match(put, /withExtensionRuntime\(async \(modelRuntime\) => \{\n\s+const context = await loadContext\(resolved\.cwd, modelRuntime\)/);
 });
 
 test("the extension-model switch puts the reads back on the full catalogue", async () => {

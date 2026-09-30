@@ -1,21 +1,20 @@
 import { buildApiKeyProviderList, buildOAuthProviderList } from "@/lib/provider-listing";
 import { collectProviderListingInputs } from "@/lib/provider-listing-runtime";
-import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
-import { readsUseLiteCatalog } from "@/lib/lite-config-settings";
+import { withCatalogRuntime } from "@/lib/model-runtime";
 
 export const dynamic = "force-dynamic";
 
 // Providers that declare an OAuth login method, including anthropic
 // (Claude Pro/Max) — see lib/provider-listing.ts (#309).
+//
+// The runtime comes from `withCatalogRuntime()`: a Lite instance answers from
+// the built-in catalogue it can actually sign in to (no extension loads), and
+// anything else loads them and releases them again.
 export async function GET() {
-  // A Lite instance only ever offers built-in and models.json providers,
-  // which is everything it can sign in to anyway — and no extension has to
-  // load to answer. Normal mode keeps the full runtime.
-  const modelRuntime = readsUseLiteCatalog()
-    ? await createLiteModelRuntime()
-    : await createModelRuntimeWithExtensions();
-  const inputs = await collectProviderListingInputs(modelRuntime);
-  const oauthProviders = buildOAuthProviderList(inputs);
-  const apiKeyProviders = buildApiKeyProviderList(inputs);
-  return Response.json({ providers: oauthProviders, oauthProviders, apiKeyProviders });
+  return withCatalogRuntime(async (modelRuntime) => {
+    const inputs = await collectProviderListingInputs(modelRuntime);
+    const oauthProviders = buildOAuthProviderList(inputs);
+    const apiKeyProviders = buildApiKeyProviderList(inputs);
+    return Response.json({ providers: oauthProviders, oauthProviders, apiKeyProviders });
+  });
 }

@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { removeStoredCredentialIfType, storeProviderCredential } from "@/lib/provider-credential-store";
-import { createLiteModelRuntime, createModelRuntimeWithExtensions } from "@/lib/model-runtime";
-import { readsUseLiteCatalog } from "@/lib/lite-config-settings";
+import { withCatalogRuntime } from "@/lib/model-runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -16,38 +15,37 @@ export async function POST(req: Request, { params }: Params) {
     if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
       return NextResponse.json({ error: "apiKey is required" }, { status: 400 });
     }
-    // A Lite instance only offers built-in and models.json providers, so the
-    // built-in catalog carries the auth method and no extension needs to load.
-    const modelRuntime = readsUseLiteCatalog()
-      ? await createLiteModelRuntime()
-      : await createModelRuntimeWithExtensions();
-    const apiKeyAuth = modelRuntime.getProvider(provider)?.auth.apiKey;
-    if (!apiKeyAuth?.login) {
-      throw new Error(`${provider} does not support API key login`);
-    }
-    let keySubmitted = false;
-    const credential = await apiKeyAuth.login({
-      signal: req.signal,
-      notify: () => {},
-      prompt: async (prompt) => {
-        if (prompt.type === "select") {
-          const keyOption = prompt.options.find((option) => option.id === "api-key" || option.id === "bearer-token");
-          if (keyOption) return keyOption.id;
-          throw new Error(`${provider} requires interactive authentication setup`);
-        }
-        if (!keySubmitted && prompt.type === "secret") {
-          keySubmitted = true;
-          return apiKey.trim();
-        }
-        throw new Error(`${provider} requires additional authentication settings`);
-      },
+    // Built-in and models.json providers only on a Lite instance: that is
+    // everything it can sign in to, and no extension has to load.
+    return await withCatalogRuntime(async (modelRuntime) => {
+      const apiKeyAuth = modelRuntime.getProvider(provider)?.auth.apiKey;
+      if (!apiKeyAuth?.login) {
+        throw new Error(`${provider} does not support API key login`);
+      }
+      let keySubmitted = false;
+      const credential = await apiKeyAuth.login({
+        signal: req.signal,
+        notify: () => {},
+        prompt: async (prompt) => {
+          if (prompt.type === "select") {
+            const keyOption = prompt.options.find((option) => option.id === "api-key" || option.id === "bearer-token");
+            if (keyOption) return keyOption.id;
+            throw new Error(`${provider} requires interactive authentication setup`);
+          }
+          if (!keySubmitted && prompt.type === "secret") {
+            keySubmitted = true;
+            return apiKey.trim();
+          }
+          throw new Error(`${provider} requires additional authentication settings`);
+        },
+      });
+      // ModelRuntime.login() persists the credential and then performs an
+      // unbounded network catalog refresh. Store the returned credential
+      // directly so a slow catalog cannot leave the save request hanging.
+      await storeProviderCredential(provider, credential);
+      invalidateModelsCache();
+      return NextResponse.json({ success: true });
     });
-    // ModelRuntime.login() persists the credential and then performs an
-    // unbounded network catalog refresh. Store the returned credential
-    // directly so a slow catalog cannot leave the save request hanging.
-    await storeProviderCredential(provider, credential);
-    invalidateModelsCache();
-    return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
