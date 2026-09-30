@@ -58,9 +58,9 @@ gone with the browser-driven design.
 oldest-first by last real activity, and skips any session that is running, has
 delegated work in flight, or is held by another tab/device (presence lease or
 SSE stream). One pass closes at most one session: the caller polls, so the next
-pass takes the next-oldest, and a single over-target reading never drops a
-page's whole working set. When nothing is reclaimable the service stays over
-target and says so — there is no escalation and no process kill.
+pass takes the next-oldest, and a single pressure reading never drops a page's
+whole working set. When nothing is reclaimable the service stays under pressure
+until the next tick — there is no escalation and no process kill.
 
 **Pressure is reported where it is noticed.** The settings control and the chat
 composer show "near" (from 90% of the target) and "over" states, both driven by
