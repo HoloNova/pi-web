@@ -28,6 +28,7 @@ import { ImagePreview } from "./ImagePreview";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 import { useLiteMode } from "@/hooks/useLiteMode";
+import { useMemoryStatus } from "@/hooks/useMemoryStatus";
 import { useChatAppearance } from "@/hooks/useChatAppearance";
 import type { ToolPreset } from "@/lib/tool-presets";
 import { SelectorRow } from "./SelectorRow";
@@ -597,6 +598,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { fontSize } = useChatAppearance();
   const isMobile = useIsMobile();
   const [liteModeEnabled] = useLiteMode();
+  // Lite mode is the only mode that acts on memory pressure, so it owns the
+  // poll. Normal mode never reads it and keeps its behaviour.
+  const { status: memoryStatus } = useMemoryStatus({ enabled: liteModeEnabled, poll: true });
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
   const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
@@ -1660,6 +1664,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div style={{ maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
+        {memoryStatus?.active && memoryStatus.state !== "ok" && (
+          <ModelNoticeBanner
+            tone="warning"
+            title={t(memoryStatus.state === "over" ? "chat.memoryOverTargetTitle" : "chat.memoryNearTargetTitle")}
+            body={t(
+              memoryStatus.state === "over" ? "chat.memoryOverTargetBody" : "chat.memoryNearTargetBody",
+              { used: String(memoryStatus.usedMiB), target: String(memoryStatus.targetMiB) },
+            )}
+          />
+        )}
         {liteModelMissing && model && (
           <ModelNoticeBanner
             tone="warning"

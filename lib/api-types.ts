@@ -163,3 +163,45 @@ export interface PluginsResponse {
 export interface LiteConfigResponse extends LiteConfig {
   bounds: LiteConfigBounds;
 }
+
+/** POST /api/memory/reclaim — what one pressure pass saw and closed. */
+export interface MemoryReclaimResponse {
+  /** Session ids whose shutdown was started, oldest first. */
+  reclaimed: string[];
+  /** Idle, unviewed sessions that were eligible this pass. */
+  reclaimable: number;
+  /** Running sessions seen, left alone. */
+  running: number;
+  /** Sessions another tab or device is viewing, left alone. */
+  viewed: number;
+  /** Sessions whose delegated child run is still working, left alone. */
+  delegated: number;
+}
+
+/**
+ * GET /api/memory — the service footprint against the instance's memory target.
+ *
+ * The target belongs to Lite mode, so a normal-mode instance reports the
+ * inactive shape; `active` discriminates the two so a consumer cannot read a
+ * number normal mode never reports.
+ */
+export type MemoryStatusResponse = MemoryStatusActiveResponse | MemoryStatusInactiveResponse;
+
+export interface MemoryStatusInactiveResponse {
+  active: false;
+}
+
+export interface MemoryStatusActiveResponse {
+  active: true;
+  targetMiB: number;
+  /** Usage at or above this fraction of the target counts as "near". */
+  nearRatio: number;
+  usedBytes: number;
+  usedMiB: number;
+  state: "ok" | "near" | "over";
+  source: "cgroup" | "process-rss";
+  approximate: boolean;
+  detail: string;
+  /** Idle, unviewed sessions a reclaim pass could close right now. */
+  idleSessions: number;
+}

@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useLiteConfig } from "@/hooks/useLiteConfig";
+import { MemoryTargetControl } from "./MemoryTargetControl";
 import { useTheme } from "@/hooks/useTheme";
 import { THEME_OPTIONS } from "@/lib/theme";
 import { ThemeIcon } from "./ThemeIcon";
@@ -342,6 +343,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
               />
             </div>
             <p className="settings-general-description">{t("settings.liteExtensionModelsDescription")}</p>
+            <MemoryTargetControl />
           </>
         )}
         {liteSnapshot.error && <p role="alert" className="settings-general-error">{liteSnapshot.error}</p>}
