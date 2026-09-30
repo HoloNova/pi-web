@@ -15,7 +15,7 @@ const STATE_LABEL_KEYS: Record<MemoryStatusActiveResponse["state"], string> = {
 /**
  * Service-wide memory target, edited in General settings while Lite mode is on.
  * It is a soft target for Pi-Web's own footprint: reaching it makes Lite mode
- * reclaim idle sessions, and it is never a hard limit — the service's systemd
+ * reclaim idle sessions on its own, and it is never a hard limit — the service's systemd
  * MemoryHigh/MemoryMax guardrails stay the real limit. The number itself is part
  * of the instance's Lite configuration, so it is stored and broadcast through
  * the same store as the rest of the mode, while the reading comes from the
@@ -24,13 +24,11 @@ const STATE_LABEL_KEYS: Record<MemoryStatusActiveResponse["state"], string> = {
 export function MemoryTargetControl() {
   const { t } = useI18n();
   const { snapshot: lite, save } = useLiteConfig();
-  const { status, error, refresh, reclaim } = useMemoryStatus({ enabled: true, poll: true });
+  const { status, error, refresh } = useMemoryStatus({ enabled: true, poll: true });
   const [draft, setDraft] = useState(() => String(lite.config.memoryTargetMiB));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [reclaiming, setReclaiming] = useState(false);
-  const [reclaimMessage, setReclaimMessage] = useState<string | null>(null);
 
   const bounds = lite.bounds.memoryTargetMiB;
   const stored = lite.config.memoryTargetMiB;
@@ -64,23 +62,6 @@ export function MemoryTargetControl() {
       setSaveError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const reclaimNow = async () => {
-    setReclaiming(true);
-    setReclaimMessage(null);
-    try {
-      const result = await reclaim();
-      setReclaimMessage(
-        result.reclaimed.length > 0
-          ? t("settings.memoryReclaimClosed", { count: String(result.reclaimed.length) })
-          : t("settings.memoryReclaimNone"),
-      );
-    } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setReclaiming(false);
     }
   };
 
@@ -125,19 +106,7 @@ export function MemoryTargetControl() {
       {(active?.approximate ?? false) && (
         <p className="settings-general-description">{t("settings.memoryTargetFallback")}</p>
       )}
-      <div className="settings-shell-option">
-        <span>{t("settings.memoryReclaim")}</span>
-        <button
-          type="button"
-          className="config-button config-button-small config-button-secondary"
-          disabled={reclaiming}
-          onClick={() => void reclaimNow()}
-        >
-          {reclaiming ? t("settings.memoryReclaiming") : t("settings.memoryReclaimAction")}
-        </button>
-      </div>
       <p className="settings-general-description">{t("settings.memoryTargetLiteHint")}</p>
-      {reclaimMessage && <p role="status" className="settings-memory-saved">{reclaimMessage}</p>}
       {saveError && <p role="alert" className="settings-general-error">{saveError}</p>}
       {error && <p role="alert" className="settings-general-error">{error}</p>}
       {saved && <p role="status" className="settings-memory-saved">{t("settings.memoryTargetSaved")}</p>}
